@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, List, Optional
 import ray
 
 from chia.base.ChiaFunction import ChiaFunction
+from chia.base.chia_log import chia_log
 from chia.base.llm_call import QueryResult, LLMCallBase, UNSET
 from chia.models.openai_compat import OpenAICompatLLM
 
@@ -227,6 +228,7 @@ class VertexGeminiLLM(LLMCallBase):
         logging_name: str = "vertex_gemini",
         logging_level: int = logging.DEBUG,
         log_dir: Optional[str] = None,
+        logging_resource: Optional[str] = None,
         project: Optional[str] = None,
         location: Optional[str] = None,
         max_tokens: int = 16000,
@@ -265,8 +267,8 @@ class VertexGeminiLLM(LLMCallBase):
         )
 
         self._log_dir = log_dir
+        self._logging_resource = logging_resource
         if log_dir is not None:
-            os.makedirs(log_dir, exist_ok=True)
             run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             self._log_prefix = os.path.join(log_dir, f"{logging_name}_{run_id}")
         else:
@@ -591,8 +593,7 @@ class VertexGeminiLLM(LLMCallBase):
 
         stream_parts.append("-" * 80 + "\n\n")
         if self._log_prefix is not None:
-            with open(f"{self._log_prefix}.log", "a") as f:
-                f.write("".join(stream_parts))
+            chia_log("".join(stream_parts), f"{self._log_prefix}.log", self._logging_resource)
 
         return QueryResult(
             result=final_text,
