@@ -17,7 +17,6 @@ import json
 import re
 import statistics
 import sys
-import time
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -95,8 +94,8 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         build_resource: The resource that the bitstream build asks for; by default,
             ``build_worker``'s resources, or the build node's ``VIVADO`` when
             ``build_worker`` is ``None``.
-        log_dir: A folder, or an ``s3://`` prefix, where it writes the bitstream build's
-            logs and reports as a ``.tar.gz``, also when the build fails; ``None`` writes none.
+        log_dir: A folder, or an ``s3://`` prefix, where the bitstream build writes its
+            logs and reports as a ``.tar.gz``, also when it fails; ``None`` writes none.
         logging_resource: The resource of the machine that writes into ``log_dir``;
             ``None`` means the head.
 
@@ -118,7 +117,7 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
     if bitstream is None:
         ecad = get(aws.launch.chia_remote(build_worker, count=1)) if build_worker else None
         try:
-            builder = BitstreamBuildNode()
+            builder = BitstreamBuildNode(log_dir=log_dir, logging_resource=logging_resource)
             build_ref = builder.build_bitstream.options(resources=resources).chia_remote(
                 builder, recipe=recipe, diffs=diffs)
             if workload_ref:
@@ -127,12 +126,9 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         finally:
             if ecad:
                 ecad.teardown()
-        if log_dir:
-            stamp = time.strftime('%Y%m%d-%H%M%S')
-            logs = chia_log(build.logs, f"{log_dir}/{recipe.name}-{stamp}-{BUILD_LOGS_NAME}", logging_resource)
         if not build.success:
             raise RuntimeError(f"bitstream build failed:\n{build.log[-4000:]}"
-                               + (f"\nAll its logs: {logs}" if log_dir else ""))
+                               + (f"\nAll its logs are in {log_dir}" if log_dir else ""))
         bitstream, built_bitstream = build.bitstream, True
     elif workload_ref:
         workload = _checked(get(workload_ref))
