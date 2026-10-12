@@ -14,6 +14,7 @@ import time
 import yaml
 
 from chia.base.ChiaFunction import ChiaFunction
+from chia.base.chia_log import chia_log
 from chia.firesim.fs_bitstream import DRIVER_TAR_NAME, FSBitstream
 from chia.firesim.state_def import BuildRecipe, EcadBuildResult
 
@@ -28,16 +29,19 @@ BUILD_LOGS_NAME = "build-logs.tar.gz"
 class BitstreamBuildNode:
     """Applies a chipyard diff and runs ``firesim buildbitstream``."""
 
-    def __init__(self, timeout_seconds: int = 86400, log_dir: str | None = None):
+    def __init__(self, timeout_seconds: int = 86400, log_dir: str | None = None,
+                 logging_resource: str | None = None):
         """
         Args:
             timeout_seconds: Wall-clock limit for the whole build, AGFI included.
-            log_dir: A folder, on the machine that runs the build, for each build's logs
-                and reports. Useful only on a machine that stays up, such as an
-                on-premises one. ``None`` keeps none; the result has them either way.
+            log_dir: A folder, or an ``s3://`` prefix, for each build's logs and reports.
+                ``None`` keeps none; the result has them either way.
+            logging_resource: The resource of the machine that writes into ``log_dir``;
+                ``None`` means the head.
         """
         self.timeout_seconds = timeout_seconds
         self.log_dir = log_dir
+        self.logging_resource = logging_resource
         self.logger = logging.getLogger("BitstreamBuildNode")
 
     @ChiaFunction(resources={"VIVADO": 1})
@@ -97,10 +101,8 @@ class BitstreamBuildNode:
         """This build's logs, also written to ``log_dir`` when it is set."""
         logs = self._pack_logs(recipe, old_logs, outputs)
         if self.log_dir:
-            os.makedirs(self.log_dir, exist_ok=True)
             name = f"{recipe.name}-{time.strftime('%Y%m%d-%H%M%S')}-{BUILD_LOGS_NAME}"
-            with open(os.path.join(self.log_dir, name), "wb") as f:
-                f.write(logs)
+            chia_log(logs, f"{self.log_dir}/{name}", self.logging_resource)
         return logs
 
     @staticmethod
