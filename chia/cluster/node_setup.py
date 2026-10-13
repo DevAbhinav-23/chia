@@ -1349,12 +1349,10 @@ def tear_down_cluster(
     else:
         # Kill any orphaned tunnels from a previous run
         from chia.cluster.tunnel import kill_orphaned_tunnels
-        kill_ips = [
-            ip for ip in config.worker_ips
-            if (tc := config.get_tunnel_config(ip)) is not None and tc.kill_orphaned_tunnels
-        ]
-        if kill_ips:
-            kill_orphaned_tunnels(kill_ips)
+        # The PID files are named by tunnel IP, so each tunnel's IP goes along.
+        for (ip, _, _), tc in worker_tunnel_configs.items():
+            if tc.kill_orphaned_tunnels:
+                kill_orphaned_tunnels([ip], tunnel_ip=tc.tunnel_ip)
 
     # Stop tailnet relays (workers + head) and any CHIA-managed
     # tailscaled daemons, best effort. The head's daemon goes strictly

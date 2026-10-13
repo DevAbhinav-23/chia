@@ -19,6 +19,12 @@ def _pid_file(key: str) -> str:
     return os.path.join(_PID_DIR, f"chia_tunnel_{safe_key}.pid")
 
 
+def _is_tunnel(pid: int) -> bool:
+    # A PID file can outlive its tunnel, and the PID can then belong to another process.
+    args = subprocess.run(["ps", "-o", "args=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return args.startswith("ssh -N")
+
+
 def _kill_orphaned_tunnel(ip: str, tunnel_ip: str | None = None,
                           gcs_port: int | None = None) -> None:
     """Kill any leftover SSH tunnel process for *ip*.
@@ -39,7 +45,7 @@ def _kill_orphaned_tunnel(ip: str, tunnel_ip: str | None = None,
             try:
                 with open(pid_path) as f:
                     pid = int(f.read().strip())
-                if pid not in killed_pids:
+                if pid not in killed_pids and _is_tunnel(pid):
                     os.kill(pid, signal.SIGTERM)
                     killed_pids.add(pid)
                     logger.info(f"Killed orphaned tunnel (pid {pid}) for {key} via PID file")
