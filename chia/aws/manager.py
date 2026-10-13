@@ -8,9 +8,10 @@ into. Each step is the code ``chia up`` runs for AWS nodes:
     run_aws_setup           install docker (and chia's other defaults), synchronously
     add_nodes_to_cluster    ssh tunnel, container, ray start
 
-The tunnel carries every Ray connection between the worker and the head, so
-the head needs no inbound ports and may sit anywhere. Its ports are read from
-the running cluster rather than from the cluster file.
+With ``connection: tunnel``, the tunnel carries every Ray connection between the
+worker and the head, so the head needs no inbound ports and may sit anywhere. Its
+ports are read from the running cluster rather than from the cluster file. With
+``connection: vpc``, the default, they use private IPs in the head's VPC instead.
 
 AWSManager runs as a Ray actor on the head (:func:`start_aws_manager`): the
 tunnels are processes on the head, and the head raylet's ports are read from

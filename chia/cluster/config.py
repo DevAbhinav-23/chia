@@ -231,7 +231,7 @@ class ClusterConfig:
     scoped_teardown: bool = True
     # How chia reaches its workers: "tunnel" (SSH tunnels), "vpc" (directly, over private IPs
     # in the head's VPC; AWS only) or "ts_user" (userspace Tailscale). "ts_kernel" is not supported yet.
-    connection: str = "tunnel"
+    connection: str = "vpc"
 
     def get_ssh_auth(self, ip: str) -> SSHAuthConfig:
         """Return SSH auth for *ip*, falling back to the global config."""
@@ -527,8 +527,8 @@ _parse_aws_tunnel_defaults = _parse_tunnel_defaults
 
 
 def _resolve_connection(raw: dict) -> str:
-    # The connection setting alone decides; without it, a tailnet: section means "ts_user".
-    connection = raw.get("connection") or ("ts_user" if raw.get("tailnet") is not None else "tunnel")
+    # The connection setting alone decides; without it, a tailnet: section means "ts_user", else "vpc".
+    connection = raw.get("connection") or ("ts_user" if raw.get("tailnet") is not None else "vpc")
     if connection not in ("tunnel", "vpc", "ts_user", "ts_kernel"):
         raise ConfigError(f"connection must be tunnel, vpc, ts_user or ts_kernel, not {connection!r}")
     if connection == "ts_kernel":
@@ -536,10 +536,12 @@ def _resolve_connection(raw: dict) -> str:
     if connection == "ts_user" and raw.get("tailnet") is None:
         raise ConfigError("connection: ts_user needs a tailnet: section")
     if connection == "vpc" and raw.get("gcp_nodes"):
-        raise ConfigError("connection: vpc works only for AWS machines, not for gcp_nodes")
+        raise ConfigError("connection: vpc, the default, works only for AWS machines; "
+                          "gcp_nodes need connection: tunnel or ts_user")
     if connection != "ts_user" and raw.get("tailnet") is not None:
         logger.warning(f"connection is {connection}, so the tailnet: section is ignored")
         raw.pop("tailnet")
+    raw["connection"] = connection   # so later reads of raw see the default too
     return connection
 
 

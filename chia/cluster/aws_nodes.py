@@ -127,8 +127,9 @@ def _head_network_interface(client: Any, head_ip: str) -> dict:
     )["NetworkInterfaces"]
     if not nics:
         raise RuntimeError(
-            f"connection: vpc needs the head on an EC2 machine in this region, and "
-            f"provider.head_ip ({head_ip}) set to its private IP"
+            f"connection: vpc, the default, needs the head on an EC2 machine in this region, and "
+            f"provider.head_ip ({head_ip}) set to its private IP; for a head outside AWS, "
+            f"set connection: tunnel"
         )
     return nics[0]
 
