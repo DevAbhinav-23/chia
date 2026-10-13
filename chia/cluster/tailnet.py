@@ -19,27 +19,21 @@ logger = get_logger("tailnet")
 _TOOL_OFFSET = 16
 _WORKER_PORT_OFFSET = 64
 
-# Remote file paths, namespaced per cluster so two clusters sharing a
-# machine never overwrite or pkill each other's relay. The directory
-# matches the default ``tailscale_dir`` layout (/tmp/<cluster_name>/...).
-# ``$USER`` stays unexpanded — the remote shell resolves it, so one
-# machine can also host relays for several users.
-
-
 def _relay_dir(cluster_name: str) -> str:
-    """Per-cluster directory holding the relay script, spec, log and pid.
+    """Per-cluster, per-user directory holding the relay script, spec, log
+    and pid: ``/tmp/<cluster_name>_$USER``.
 
     *cluster_name* comes from user-supplied YAML and lands inside a shell
     command, so it is sanitised exactly as ``tailscale_dir`` is in
     :mod:`chia.cluster.config`.
     """
     safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(cluster_name or "default"))
-    return f"/tmp/{safe}"
+    return f"/tmp/{safe}_$USER"
 
 
 def _remote_base(cluster_name: str) -> str:
     """Path prefix for this cluster's relay files on a remote host."""
-    return f"{_relay_dir(cluster_name)}/chia_tailnet_relay_$USER"
+    return f"{_relay_dir(cluster_name)}/chia_tailnet_relay"
 
 
 def _relay_pkill_pattern(cluster_name: str) -> str:
@@ -48,9 +42,9 @@ def _relay_pkill_pattern(cluster_name: str) -> str:
     ``[y]`` keeps the pattern from matching the argv of the pkill that
     carries it. The leading directory is what scopes the match to one
     cluster, and the trailing ``/`` in it anchors the name: a pattern for
-    cluster ``evolve`` cannot match ``/tmp/evolve2/``'s relay.
+    cluster ``evolve`` cannot match ``/tmp/evolve2_$USER/``'s relay.
     """
-    return f"{_relay_dir(cluster_name)}/chia_tailnet_rela[y]_$USER.py"
+    return f"{_relay_dir(cluster_name)}/chia_tailnet_rela[y].py"
 
 # The relay that runs on every tailnet machine (including the head).
 # Pure-stdlib Python 3: listens on peer workers' advertised loopback addresses and
