@@ -588,12 +588,12 @@ class TestCloudTailnet(unittest.TestCase):
             # Public IP → orchestration SSH is direct, no SOCKS proxy.
             self.assertIsNone(auth.ssh_proxy_command)
 
-    def test_aws_defaults_to_tunnels_without_section(self):
+    def test_aws_defaults_to_vpc_without_section(self):
         joining, raw = self._apply(_make_cloud_raw(with_tailnet_section=False))
         self.assertEqual(joining, {})
         config = build_config(raw)
         for ip in self.IP_MAP["ec2_worker"]:
-            self.assertTrue(config.is_tunneled(ip))
+            self.assertFalse(config.is_tunneled(ip))
 
     def test_explicit_opt_out_keeps_tunnels_but_mixing_fails(self):
         # join_tailnet: false with a tailnet section → tunnels injected,

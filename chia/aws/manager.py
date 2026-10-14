@@ -8,9 +8,10 @@ into. Each step is the code ``chia up`` runs for AWS nodes:
     run_aws_setup           install docker (and chia's other defaults), synchronously
     add_nodes_to_cluster    ssh tunnel, container, ray start
 
-The tunnel carries every Ray connection between the worker and the head, so
-the head needs no inbound ports and may sit anywhere. Its ports are read from
-the running cluster rather than from the cluster file.
+With ``connection: tunnel``, the tunnel carries every Ray connection between the
+worker and the head, so the head needs no inbound ports and may sit anywhere. Its
+ports are read from the running cluster rather than from the cluster file. With
+``connection: vpc``, the default, they use private IPs in the head's VPC instead.
 
 AWSManager runs as a Ray actor on the head (:func:`start_aws_manager`): the
 tunnels are processes on the head, and the head raylet's ports are read from
@@ -37,6 +38,11 @@ from chia.cluster.node_setup import add_nodes_to_cluster
 logger = get_logger("aws.manager")
 
 AWSWorker = tuple[NodeTypeConfig, AWSNodeConfig]
+
+
+def worker_resources(worker: AWSWorker) -> dict[str, float]:
+    # The resources that a machine of this definition advertises when it joins the cluster.
+    return dict(worker[0].resources)
 
 
 @dataclass
@@ -66,6 +72,11 @@ class AWSManager:
         self.cluster_config = cluster_config
         self.aws_config = aws_config
         self._tunnels = {}     # farm ips -> the TunnelManager carrying their Ray traffic
+        if cluster_config.connection not in ("tunnel", "vpc"):
+            raise ValueError(f"AWSManager supports connection tunnel or vpc, not {cluster_config.connection}")
+        self._vpc_id = cluster_config.aws_config.vpc_id if cluster_config.aws_config else None
+        # The head's private IP with connection "vpc"; None means SSH tunnels.
+        self._vpc_head_ip = cluster_config.head_ip if cluster_config.connection == "vpc" else None
 
     def launch(self, worker: AWSWorker, count: int = 1) -> Farm:
         """Bring up ``count`` instances of ``worker`` and join them to the cluster."""
@@ -76,13 +87,13 @@ class AWSManager:
                           ImageId=machine.ImageId or get_default_ami(aws.region))
         nodes = {node_type.name: machine}
 
-        ips = provision_aws_nodes(self.cluster_config.cluster_name, nodes,
-                                  aws.region)[node_type.name]
+        ips = provision_aws_nodes(self.cluster_config.cluster_name, nodes, aws.region,
+                                  self._vpc_id, self._vpc_head_ip)[node_type.name]
         farm = Farm(node_type.name, aws.region, ips, ray.get_runtime_context().current_actor)
         try:
             # A copy: this launch's machines stay out of the manager's config.
             config = copy.deepcopy(self.cluster_config)
-            tunnel = self._head_tunnel_config()
+            tunnel = None if self._vpc_head_ip else self._head_tunnel_config()
             for ip in ips:
                 config.auth_overrides[ip] = SSHAuthConfig(
                     ssh_user=aws.ssh_user, ssh_private_key=aws.ssh_private_key,
@@ -93,7 +104,7 @@ class AWSManager:
             # by assign_nodes' worker indexes, so the node joins the copy first
             # and its assignments come from assign_nodes.
             config.worker_ips = config.worker_ips + ips
-            # The container's AWS calls (F2_ECAD's aws_create_afi) need a region.
+            # The container's AWS calls (F2_VIVADO's aws_create_afi) need a region.
             docker = node_type.docker and replace(node_type.docker, run_options=[
                 *node_type.docker.run_options, "-e", f"AWS_DEFAULT_REGION={aws.region}"])
             config.node_types[node_type.name] = replace(
@@ -125,8 +136,10 @@ class AWSManager:
         if farm.ips:
             import boto3
 
+            # With connection "vpc", the farm's IPs are private ones.
+            address = "private-ip-address" if self._vpc_head_ip else "ip-address"
             reservations = boto3.client("ec2", region_name=farm.region).describe_instances(
-                Filters=[{"Name": "ip-address", "Values": farm.ips}])["Reservations"]
+                Filters=[{"Name": address, "Values": farm.ips}])["Reservations"]
             ids = [i["InstanceId"] for r in reservations for i in r["Instances"]]
             if ids:
                 logger.info(f"Terminating {len(ids)} '{farm.name}' instance(s)")
