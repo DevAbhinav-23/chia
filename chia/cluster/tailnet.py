@@ -750,8 +750,9 @@ def start_relay(ssh: SSHClient, spec: dict, cluster_name: str) -> None:
     logger.info(f"[{ssh.ip}] Tailnet relay up "
                 f"({len(spec['listeners'])} listeners)")
 
-def update_relay(ssh: SSHClient, spec: dict) -> None:
-    """Hot-reload the relay on *ssh*'s host with *spec*, or start it.
+def update_relay(ssh: SSHClient, spec: dict, cluster_name: str) -> None:
+    """Hot-reload *cluster_name*'s relay on *ssh*'s host with *spec*, or
+    start it.
 
     A running relay is sent SIGHUP to diff in the new listeners and
     routes, so the Ray connections it is carrying survive (``chia up
@@ -762,43 +763,44 @@ def update_relay(ssh: SSHClient, spec: dict) -> None:
     if not spec["listeners"]:
         logger.debug(f"[{ssh.ip}] No relay listeners needed, skipping")
         return
+    base = _remote_base(cluster_name)
     token = uuid.uuid4().hex
     spec_json = json.dumps({**spec, "reload_token": token}, indent=1)
     # One if/elif/else rather than early `exit 0`s: in a login shell,
     # `exit` runs ~/.bash_logout, and Ubuntu's stock one (clear_console
     # failing with no console) turns `exit 0` into exit status 1.
     result = ssh.run_script([
-        f"PID=$(cat {_REMOTE_BASE}.pid 2>/dev/null || true)",
-        f'if [ -z "$PID" ] || ! pgrep -f "chia_tailnet_rela[y]_$USER.py" '
+        f"PID=$(cat {base}.pid 2>/dev/null || true)",
+        f'if [ -z "$PID" ] || ! pgrep -f "{_relay_pkill_pattern(cluster_name)}" '
         f'| grep -qx "$PID"; then echo CHIA_RELAY_ABSENT',
-        f'elif ! grep -q "^CHIA_RELAY_READY .* reload$" {_REMOTE_BASE}.log '
+        f'elif ! grep -q "^CHIA_RELAY_READY .* reload$" {base}.log '
         f'2>/dev/null; then echo CHIA_RELAY_LEGACY',
         "else",
-        f"cat > {_REMOTE_BASE}.json <<'CHIA_RELAY_SPEC_EOF'\n"
+        f"cat > {base}.json <<'CHIA_RELAY_SPEC_EOF'\n"
         f"{spec_json}\n"
         f"CHIA_RELAY_SPEC_EOF",
         'kill -HUP "$PID"',
         f'for i in $(seq 1 40); do '
-        f'grep -q "^CHIA_RELAY_RELOADED {token} " {_REMOTE_BASE}.log && break; '
+        f'grep -q "^CHIA_RELAY_RELOADED {token} " {base}.log && break; '
         f'sleep 0.5; done',
-        f'if ! grep "^CHIA_RELAY_RELOADED {token} " {_REMOTE_BASE}.log; then '
+        f'if ! grep "^CHIA_RELAY_RELOADED {token} " {base}.log; then '
         f'echo "chia tailnet relay did not acknowledge the reload:"; '
-        f'tail -n 50 {_REMOTE_BASE}.log; exit 1; fi',
+        f'tail -n 50 {base}.log; exit 1; fi',
         "fi",
     ], timeout=120)
     if "CHIA_RELAY_ABSENT" in result.stdout:
-        start_relay(ssh, spec)
+        start_relay(ssh, spec, cluster_name)
         return
     if "CHIA_RELAY_LEGACY" in result.stdout:
         logger.warning(
             f"[{ssh.ip}] Tailnet relay predates hot reload — restarting it, "
             f"which drops the Ray connections it carries")
-        start_relay(ssh, spec)
+        start_relay(ssh, spec, cluster_name)
         return
     ack = next(line for line in result.stdout.splitlines()
                if line.startswith(f"CHIA_RELAY_RELOADED {token} "))
     if not ack.endswith(" errors=0"):
-        log = ssh.run(f"tail -n 50 {_REMOTE_BASE}.log", check=False)
+        log = ssh.run(f"tail -n 50 {base}.log", check=False)
         raise RuntimeError(
             f"Tailnet relay on {ssh.ip} failed to bind new listener(s) on "
             f"reload ({ack}):\n{log.stdout}")
@@ -806,9 +808,10 @@ def update_relay(ssh: SSHClient, spec: dict) -> None:
                 f"({len(spec['listeners'])} listeners)")
 
 
-def read_relay_spec(ssh: SSHClient) -> dict | None:
-    """The spec of the relay deployed on *ssh*'s host, or ``None``."""
-    result = ssh.run(f"cat {_REMOTE_BASE}.json", check=False)
+def read_relay_spec(ssh: SSHClient, cluster_name: str) -> dict | None:
+    """The spec of *cluster_name*'s relay on *ssh*'s host, or ``None``."""
+    base = _remote_base(cluster_name)
+    result = ssh.run(f"cat {base}.json", check=False)
     if result.returncode != 0:
         return None
     try:
