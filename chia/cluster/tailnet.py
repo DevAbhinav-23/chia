@@ -20,8 +20,32 @@ logger = get_logger("tailnet")
 _TOOL_OFFSET = 16
 _WORKER_PORT_OFFSET = 64
 
-# Remote file paths ($USER is expanded by the remote shell).
-_REMOTE_BASE = "/tmp/chia_tailnet_relay_$USER"
+def _relay_dir(cluster_name: str) -> str:
+    """Per-cluster, per-user directory holding the relay script, spec, log
+    and pid: ``/tmp/<cluster_name>_$USER``.
+
+    *cluster_name* comes from user-supplied YAML and lands inside a shell
+    command, so it is sanitised exactly as ``tailscale_dir`` is in
+    :mod:`chia.cluster.config`.
+    """
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(cluster_name or "default"))
+    return f"/tmp/{safe}_$USER"
+
+
+def _remote_base(cluster_name: str) -> str:
+    """Path prefix for this cluster's relay files on a remote host."""
+    return f"{_relay_dir(cluster_name)}/chia_tailnet_relay"
+
+
+def _relay_pkill_pattern(cluster_name: str) -> str:
+    """``pkill -f`` pattern matching only THIS cluster's relay.
+
+    ``[y]`` keeps the pattern from matching the argv of the pkill that
+    carries it. The leading directory is what scopes the match to one
+    cluster, and the trailing ``/`` in it anchors the name: a pattern for
+    cluster ``evolve`` cannot match ``/tmp/evolve2_$USER/``'s relay.
+    """
+    return f"{_relay_dir(cluster_name)}/chia_tailnet_rela[y].py"
 
 # The relay that runs on every tailnet machine (including the head).
 # Pure-stdlib Python 3: listens on peer workers' advertised loopback addresses and
@@ -688,41 +712,47 @@ def build_relay_spec(
             "routes": routes}
 
 
-def start_relay(ssh: SSHClient, spec: dict) -> None:
-    """Deploy and (re)start the tailnet relay on *ssh*'s host."""
+def start_relay(ssh: SSHClient, spec: dict, cluster_name: str) -> None:
+    """Deploy and (re)start the tailnet relay on *ssh*'s host.
+
+    *cluster_name* namespaces the relay's files and its pkill pattern, so
+    bringing up one cluster never tears down a co-tenant cluster's relay
+    on a shared machine.
+    """
     if not spec["listeners"]:
         logger.debug(f"[{ssh.ip}] No relay listeners needed, skipping")
         return
+    base = _remote_base(cluster_name)
     spec_json = json.dumps(spec, indent=1)
     script = [
-        f"cat > {_REMOTE_BASE}.py <<'CHIA_RELAY_SCRIPT_EOF'\n"
+        f"mkdir -p {_relay_dir(cluster_name)}",
+        f"cat > {base}.py <<'CHIA_RELAY_SCRIPT_EOF'\n"
         f"{RELAY_SCRIPT}\n"
         f"CHIA_RELAY_SCRIPT_EOF",
-        f"cat > {_REMOTE_BASE}.json <<'CHIA_RELAY_SPEC_EOF'\n"
+        f"cat > {base}.json <<'CHIA_RELAY_SPEC_EOF'\n"
         f"{spec_json}\n"
         f"CHIA_RELAY_SPEC_EOF",
-        # [y] avoids the pattern matching any process whose argv quotes it.
-        f'pkill -f "chia_tailnet_rela[y]_$USER.py" 2>/dev/null || true',
+        f'pkill -f "{_relay_pkill_pattern(cluster_name)}" 2>/dev/null || true',
         "sleep 0.5",
-        f"rm -f {_REMOTE_BASE}.log",
-        f"nohup python3 {_REMOTE_BASE}.py {_REMOTE_BASE}.json "
-        f"> {_REMOTE_BASE}.log 2>&1 &",
-        f"echo $! > {_REMOTE_BASE}.pid",
+        f"rm -f {base}.log",
+        f"nohup python3 {base}.py {base}.json "
+        f"> {base}.log 2>&1 &",
+        f"echo $! > {base}.pid",
         'ok=""',
         f'for i in $(seq 1 40); do '
-        f'if grep -q CHIA_RELAY_READY {_REMOTE_BASE}.log 2>/dev/null; '
+        f'if grep -q CHIA_RELAY_READY {base}.log 2>/dev/null; '
         f'then ok=1; break; fi; sleep 0.5; done',
         f'if [ -z "$ok" ]; then echo "chia tailnet relay failed to start:"; '
-        f'cat {_REMOTE_BASE}.log; exit 1; fi',
-        f"grep CHIA_RELAY_READY {_REMOTE_BASE}.log",
+        f'cat {base}.log; exit 1; fi',
+        f"grep CHIA_RELAY_READY {base}.log",
     ]
     ssh.run_script(script, timeout=120)
     logger.info(f"[{ssh.ip}] Tailnet relay up "
                 f"({len(spec['listeners'])} listeners)")
 
-
-def update_relay(ssh: SSHClient, spec: dict) -> None:
-    """Hot-reload the relay on *ssh*'s host with *spec*, or start it.
+def update_relay(ssh: SSHClient, spec: dict, cluster_name: str) -> None:
+    """Hot-reload *cluster_name*'s relay on *ssh*'s host with *spec*, or
+    start it.
 
     A running relay is sent SIGHUP to diff in the new listeners and
     routes, so the Ray connections it is carrying survive (``chia up
@@ -733,43 +763,44 @@ def update_relay(ssh: SSHClient, spec: dict) -> None:
     if not spec["listeners"]:
         logger.debug(f"[{ssh.ip}] No relay listeners needed, skipping")
         return
+    base = _remote_base(cluster_name)
     token = uuid.uuid4().hex
     spec_json = json.dumps({**spec, "reload_token": token}, indent=1)
     # One if/elif/else rather than early `exit 0`s: in a login shell,
     # `exit` runs ~/.bash_logout, and Ubuntu's stock one (clear_console
     # failing with no console) turns `exit 0` into exit status 1.
     result = ssh.run_script([
-        f"PID=$(cat {_REMOTE_BASE}.pid 2>/dev/null || true)",
-        f'if [ -z "$PID" ] || ! pgrep -f "chia_tailnet_rela[y]_$USER.py" '
+        f"PID=$(cat {base}.pid 2>/dev/null || true)",
+        f'if [ -z "$PID" ] || ! pgrep -f "{_relay_pkill_pattern(cluster_name)}" '
         f'| grep -qx "$PID"; then echo CHIA_RELAY_ABSENT',
-        f'elif ! grep -q "^CHIA_RELAY_READY .* reload$" {_REMOTE_BASE}.log '
+        f'elif ! grep -q "^CHIA_RELAY_READY .* reload$" {base}.log '
         f'2>/dev/null; then echo CHIA_RELAY_LEGACY',
         "else",
-        f"cat > {_REMOTE_BASE}.json <<'CHIA_RELAY_SPEC_EOF'\n"
+        f"cat > {base}.json <<'CHIA_RELAY_SPEC_EOF'\n"
         f"{spec_json}\n"
         f"CHIA_RELAY_SPEC_EOF",
         'kill -HUP "$PID"',
         f'for i in $(seq 1 40); do '
-        f'grep -q "^CHIA_RELAY_RELOADED {token} " {_REMOTE_BASE}.log && break; '
+        f'grep -q "^CHIA_RELAY_RELOADED {token} " {base}.log && break; '
         f'sleep 0.5; done',
-        f'if ! grep "^CHIA_RELAY_RELOADED {token} " {_REMOTE_BASE}.log; then '
+        f'if ! grep "^CHIA_RELAY_RELOADED {token} " {base}.log; then '
         f'echo "chia tailnet relay did not acknowledge the reload:"; '
-        f'tail -n 50 {_REMOTE_BASE}.log; exit 1; fi',
+        f'tail -n 50 {base}.log; exit 1; fi',
         "fi",
     ], timeout=120)
     if "CHIA_RELAY_ABSENT" in result.stdout:
-        start_relay(ssh, spec)
+        start_relay(ssh, spec, cluster_name)
         return
     if "CHIA_RELAY_LEGACY" in result.stdout:
         logger.warning(
             f"[{ssh.ip}] Tailnet relay predates hot reload — restarting it, "
             f"which drops the Ray connections it carries")
-        start_relay(ssh, spec)
+        start_relay(ssh, spec, cluster_name)
         return
     ack = next(line for line in result.stdout.splitlines()
                if line.startswith(f"CHIA_RELAY_RELOADED {token} "))
     if not ack.endswith(" errors=0"):
-        log = ssh.run(f"tail -n 50 {_REMOTE_BASE}.log", check=False)
+        log = ssh.run(f"tail -n 50 {base}.log", check=False)
         raise RuntimeError(
             f"Tailnet relay on {ssh.ip} failed to bind new listener(s) on "
             f"reload ({ack}):\n{log.stdout}")
@@ -777,9 +808,10 @@ def update_relay(ssh: SSHClient, spec: dict) -> None:
                 f"({len(spec['listeners'])} listeners)")
 
 
-def read_relay_spec(ssh: SSHClient) -> dict | None:
-    """The spec of the relay deployed on *ssh*'s host, or ``None``."""
-    result = ssh.run(f"cat {_REMOTE_BASE}.json", check=False)
+def read_relay_spec(ssh: SSHClient, cluster_name: str) -> dict | None:
+    """The spec of *cluster_name*'s relay on *ssh*'s host, or ``None``."""
+    base = _remote_base(cluster_name)
+    result = ssh.run(f"cat {base}.json", check=False)
     if result.returncode != 0:
         return None
     try:
@@ -807,12 +839,15 @@ def query_tailnet_ip(ssh: SSHClient, tn: TailnetConfig) -> str | None:
             return line.split("=", 1)[1].strip() or None
     return None
 
+def stop_relay(ssh: SSHClient, cluster_name: str) -> None:
+    """Stop this cluster's tailnet relay on *ssh*'s host (best effort).
 
-def stop_relay(ssh: SSHClient) -> None:
-    """Stop the tailnet relay on *ssh*'s host (best effort)."""
+    Scoped by *cluster_name*: a co-tenant cluster's relay on the same
+    machine is left running.
+    """
     ssh.run_script([
-        f'pkill -f "chia_tailnet_rela[y]_$USER.py" 2>/dev/null || true',
-        f"rm -f {_REMOTE_BASE}.pid",
+        f'pkill -f "{_relay_pkill_pattern(cluster_name)}" 2>/dev/null || true',
+        f"rm -f {_remote_base(cluster_name)}.pid",
     ], check=False)
     logger.info(f"[{ssh.ip}] Tailnet relay stopped")
 

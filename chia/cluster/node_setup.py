@@ -221,7 +221,7 @@ def plan_tailnet_add(
             tailnet_ip_map = {ip: ts_ip for ip, ts_ip in zip(managed_ips, ts_ips)
                               if ts_ip}
 
-    head_spec = read_relay_spec(head_ssh) or {}
+    head_spec = read_relay_spec(head_ssh, config.cluster_name) or {}
     live = live_tailnet_workers(config, existing_nodes,
                                 head_spec.get("routes", {}), tailnet_ip_map)
 
@@ -299,12 +299,14 @@ def _join_and_reload_tailnet(
                         if key[0] in config.worker_ips} - {config.head_ip})
     with log_phase(logger, f"Updating tailnet relay on head {config.head_ip}"):
         update_relay(_make_ssh(config, config.head_ip),
-                     build_relay_spec(config, all_allocs, None))
+                     build_relay_spec(config, all_allocs, None),
+                     config.cluster_name)
     for ip in relay_ips:
         ssh = _make_ssh(config, ip)
         ssh.wait_for_ssh()
         with log_phase(logger, f"Updating tailnet relay on {ip}"):
-            update_relay(ssh, build_relay_spec(config, all_allocs, ip))
+            update_relay(ssh, build_relay_spec(config, all_allocs, ip),
+                         config.cluster_name)
     logger.info(f"Tailnet relays updated on head + {len(relay_ips)} machine(s)")
     return new_allocs
 
@@ -981,12 +983,14 @@ def bring_up_cluster(config: ClusterConfig) -> TunnelManager | None:
             {key[0] for key in tailnet_allocs} - {config.head_ip})
         with log_phase(logger, f"Starting tailnet relay on head {config.head_ip}"):
             start_relay(_make_ssh(config, config.head_ip),
-                        build_relay_spec(config, tailnet_allocs, None))
+                        build_relay_spec(config, tailnet_allocs, None),
+                        config.cluster_name)
         for ip in tailnet_host_ips:
             ssh = _make_ssh(config, ip)
             ssh.wait_for_ssh()
             with log_phase(logger, f"Starting tailnet relay on {ip}"):
-                start_relay(ssh, build_relay_spec(config, tailnet_allocs, ip))
+                start_relay(ssh, build_relay_spec(config, tailnet_allocs, ip),
+                            config.cluster_name)
         logger.info(f"Tailnet relays up on head + {len(tailnet_host_ips)} machine(s)")
 
     # Group assignments by IP so we set up workers on the same machine
@@ -1367,7 +1371,7 @@ def tear_down_cluster(
             try:
                 ssh = _make_ssh(config, ip)
                 with log_phase(logger, f"Stopping tailnet relay on {ip}"):
-                    stop_relay(ssh)
+                    stop_relay(ssh, config.cluster_name)
                 is_head = ip == config.head_ip
                 managed = (tn.manage_all if is_head
                            else config.get_ssh_auth(ip).manage_tailscale)

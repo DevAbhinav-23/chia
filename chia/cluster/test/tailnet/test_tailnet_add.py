@@ -284,7 +284,7 @@ class TestAddNodesToCluster(unittest.TestCase):
         with mock.patch.object(node_setup, "_make_ssh",
                                side_effect=lambda cfg, ip: mock.MagicMock(ip=ip)), \
              mock.patch.object(node_setup, "update_relay",
-                               side_effect=lambda ssh, spec:
+                               side_effect=lambda ssh, spec, name:
                                    relays.__setitem__(ssh.ip, spec)), \
              mock.patch.object(node_setup, "ensure_tailscale",
                                side_effect=_ensure), \
@@ -464,26 +464,26 @@ class TestUpdateRelay(unittest.TestCase):
     def test_absent_relay_is_started(self):
         ssh = self._ssh(lambda t: "CHIA_RELAY_ABSENT\n")
         with mock.patch.object(tailnet, "start_relay") as start:
-            update_relay(ssh, self.SPEC)
-        start.assert_called_once_with(ssh, self.SPEC)
+            update_relay(ssh, self.SPEC, "c1")
+        start.assert_called_once_with(ssh, self.SPEC, "c1")
 
     def test_legacy_relay_is_restarted(self):
         ssh = self._ssh(lambda t: "CHIA_RELAY_LEGACY\n")
         with mock.patch.object(tailnet, "start_relay") as start, \
              self.assertLogs("chia.tailnet", level="WARNING"):
-            update_relay(ssh, self.SPEC)
+            update_relay(ssh, self.SPEC, "c1")
         start.assert_called_once()
 
     def test_reload_acknowledged(self):
         ssh = self._ssh(lambda t: f"CHIA_RELAY_RELOADED {t} 1 errors=0\n")
         with mock.patch.object(tailnet, "start_relay") as start:
-            update_relay(ssh, self.SPEC)
+            update_relay(ssh, self.SPEC, "c1")
         start.assert_not_called()
 
     def test_reload_bind_errors_raise(self):
         ssh = self._ssh(lambda t: f"CHIA_RELAY_RELOADED {t} 1 errors=2\n")
         with self.assertRaises(RuntimeError):
-            update_relay(ssh, self.SPEC)
+            update_relay(ssh, self.SPEC, "c1")
 
 
 def _free_port() -> int:
@@ -668,6 +668,7 @@ class TestRelayControlInLoginShell(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.ssh = _LoginShellSSH(self.tmp.name)
+        self.cluster = f"relay-test-{os.getpid()}"
         port = _free_port()
         self.spec1 = {"socks_proxy": "127.0.0.1:9", "routes": {"127.0.0.9": None},
                       "listeners": [{"bind_ip": "127.0.0.1", "port": port,
@@ -675,21 +676,21 @@ class TestRelayControlInLoginShell(unittest.TestCase):
         self.spec2 = {**self.spec1, "routes": {"127.0.0.10": None}}
 
     def tearDown(self):
-        tailnet.stop_relay(self.ssh)
-        self.ssh.run("rm -f /tmp/chia_tailnet_relay_$USER.*", check=False)
+        tailnet.stop_relay(self.ssh, self.cluster)
+        self.ssh.run(f"rm -rf {tailnet._relay_dir(self.cluster)}", check=False)
         self.tmp.cleanup()
 
     def _pid(self):
-        return self.ssh.run("cat /tmp/chia_tailnet_relay_$USER.pid",
+        return self.ssh.run(f"cat {tailnet._remote_base(self.cluster)}.pid",
                             check=False).stdout.strip()
 
     def test_absent_then_reload_in_place(self):
-        update_relay(self.ssh, self.spec1)          # fresh machine: starts
+        update_relay(self.ssh, self.spec1, self.cluster)  # fresh: starts
         started = self._pid()
         self.assertTrue(started)
-        update_relay(self.ssh, self.spec2)          # running: hot reload
+        update_relay(self.ssh, self.spec2, self.cluster)  # running: hot reload
         self.assertEqual(self._pid(), started)
-        spec = tailnet.read_relay_spec(self.ssh)
+        spec = tailnet.read_relay_spec(self.ssh, self.cluster)
         self.assertEqual(spec["routes"], {"127.0.0.10": None})
 
 
