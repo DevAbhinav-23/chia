@@ -353,6 +353,14 @@ CHIA can provision public-cloud machines and join them to the cluster.
 Declare them under ``aws_nodes`` (EC2) and/or ``gcp_nodes`` (Compute
 Engine); everything downstream of provisioning is provider-agnostic.
 
+.. warning::
+
+   Ray has no login: anyone who can reach a Ray port can run jobs on your
+   cluster. Never run a CHIA cluster on machines that open other ports to the
+   internet. On AWS and on GCP, CHIA opens only SSH (port 22) and never a Ray
+   port. You are responsible for not opening other ports in other ways, for
+   example with your own security groups or firewall rules.
+
 **How cloud workers connect.** The top-level ``connection`` setting decides:
 
 .. list-table::
@@ -362,10 +370,10 @@ Engine); everything downstream of provisioning is provider-agnostic.
    * - ``connection``
      - Cloud workers reach the head
    * - ``vpc`` (default)
-     - Directly, over private IPs. The head must be an EC2 machine in the same
-       region (``aws_nodes``) or a GCP VM in the same project (``gcp_nodes``),
-       and ``provider.head_ip`` its private IP. CHIA launches the workers in
-       the head's network.
+     - Directly, over private IPs. The head runs in the workers' cloud (an EC2
+       machine for ``aws_nodes``, a GCP VM for ``gcp_nodes``), and
+       ``provider.head_ip`` is its private IP. CHIA launches the workers in the
+       head's network.
    * - ``tunnel``
      - Over SSH tunnels from the head, so the head can be anywhere (a laptop,
        an on-prem server). Traffic between workers goes through the head.
@@ -374,27 +382,16 @@ Engine); everything downstream of provisioning is provider-agnostic.
        it is the default when the config has one. See `Tailnet (tailscale)
        clusters`_.
 
-* A head on EC2 or GCP uses ``vpc``. A head elsewhere uses ``ts_user``
+* Head on EC2 or GCP: use ``vpc``. Head anywhere else: use ``ts_user``
   (recommended) or ``tunnel``.
-* With ``vpc``, one cluster cannot have both ``aws_nodes`` and ``gcp_nodes``.
+* With ``vpc``, a cluster uses one cloud: ``aws_nodes`` or ``gcp_nodes``.
 * Machines that a job launches at runtime with ``AWSManager`` follow the same
   setting (``vpc`` or ``tunnel``).
-* CHIA creates one security group for the cluster's AWS machines, and
-  ``chia down`` deletes it. With ``vpc``, it admits only the cluster's machines,
-  the head included.
+* CHIA closes the cluster's cloud machines to all traffic except the cluster's
+  own and SSH from the head: with a security group on AWS, with firewall rules
+  on GCP. ``chia down`` deletes them.
 * With ``tunnel``, ``aws: vpc_id`` chooses the workers' VPC (default: the
   account's default VPC).
-* For ``gcp_nodes``, CHIA creates firewall rules aimed at network tags: the
-  workers get ``chia-<cluster_name>``, and with ``vpc`` the head VM gets
-  ``chia-<cluster_name>-head``. The rules admit all traffic between the
-  cluster's machines and, with ``tunnel`` or ``ts_user``, SSH from the head's
-  public IP. They deny all other incoming traffic to the workers, also the
-  traffic that the network's own rules allow. ``chia down`` deletes the rules
-  and removes the head's tag. CHIA warns when another rule opens every port of
-  the head.
-* With ``tunnel`` or ``ts_user``, ``gcp_nodes: network`` chooses the workers'
-  network (default: ``default``). With ``vpc``, the workers go in the head's
-  network.
 
 aws_nodes
 ~~~~~~~~~
@@ -494,14 +491,10 @@ gcp_nodes
            disk_size_gb: 100
 
 ``project`` (required), ``zone`` (default ``us-central1-a``), ``network`` and
-``subnetwork`` are section-level keys. ``network`` is the head's network with
-``vpc``, else the project's ``default`` network unless set. Without
-``subnetwork``, CHIA uses the head's subnet in the head's region (``vpc``), else
-the network's only subnet in each zone's region. CHIA stops before it launches
-anything if the network has no subnet or several subnets there, or no route to
-the internet. GCP names (instances, network tags, firewall rules) have at most
-63 characters, so CHIA also stops if ``cluster_name`` or a node type name is too
-long. Every other key lives under a named node type:
+``subnetwork`` are section-level keys. With ``vpc``, the workers go in the
+head's network; otherwise in ``network`` (default ``default``). Set
+``subnetwork`` only when a region has several subnets. Every other key lives
+under a named node type:
 
 .. list-table::
    :header-rows: 1
