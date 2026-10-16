@@ -26,8 +26,9 @@ from ray import cloudpickle
 from chia.aws.manager import AWSWorker, worker_resources
 from chia.aws.s3 import S3Node
 from chia.base.ChiaFunction import ChiaFunction, get
+from chia.base.chia_log import chia_log
 from chia.chipyard.state_def import FireMarshalArtifact
-from chia.firesim.bitstream_build_node import BitstreamBuildNode
+from chia.firesim.bitstream_build_node import BUILD_LOGS_NAME, BitstreamBuildNode
 from chia.firesim.fs_bitstream import FSBitstream
 from chia.firesim.manager_node import FireSimManagerNode
 from chia.firesim.specs import F2_SIM, F2_VIVADO
@@ -63,7 +64,9 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
               cores: int = 1, upload_to: str | None = None,
               max_fpgas: int = 12, small_images: bool = False,
               build_worker: AWSWorker | None = F2_VIVADO,
-              build_resource: str | None = None) -> SpecEvalResult:
+              build_resource: str | None = None,
+              log_dir: str | None = None,
+              logging_resource: str | None = None) -> SpecEvalResult:
     """Run ``spec`` on ``recipe`` with ``diffs``, and score it. The SPEC build and the
     bitstream build run at the same time.
 
@@ -80,8 +83,8 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         spec_flags: Flags added to each RISC-V compile and link of SPEC, for example
             ``"-march=rv64gc_zba"``.
         cores: The threads of a SPEC speed run, or the copies of a rate run.
-        upload_to: The S3 location, ``s3://bucket/prefix``, for the workload and the
-            bitstream that it builds; ``None`` uploads nothing.
+        upload_to: The S3 location, ``s3://bucket/prefix``, for the workload, and for the
+            bitstream that it builds with its build logs; ``None`` uploads nothing.
         max_fpgas: The most F2 machines that it launches for the simulations, one for each
             SPEC job.
         small_images: With ``True``, each job's disk image holds only its own benchmark,
@@ -91,6 +94,10 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         build_resource: The resource that the bitstream build asks for; by default,
             ``build_worker``'s resources, or the build node's ``VIVADO`` when
             ``build_worker`` is ``None``.
+        log_dir: A folder, or an ``s3://`` prefix, where the bitstream build writes its
+            logs and reports as a ``.tar.gz``, also when it fails; ``None`` writes none.
+        logging_resource: The resource of the machine that writes into ``log_dir``;
+            ``None`` means the head.
 
     Raises:
         ValueError: ``build_worker`` does not have ``build_resource``.
@@ -110,7 +117,7 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
     if bitstream is None:
         ecad = get(aws.launch.chia_remote(build_worker, count=1)) if build_worker else None
         try:
-            builder = BitstreamBuildNode()
+            builder = BitstreamBuildNode(log_dir=log_dir, logging_resource=logging_resource)
             build_ref = builder.build_bitstream.options(resources=resources).chia_remote(
                 builder, recipe=recipe, diffs=diffs)
             if workload_ref:
@@ -120,7 +127,8 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
             if ecad:
                 ecad.teardown()
         if not build.success:
-            raise RuntimeError(f"bitstream build failed:\n{build.log[-4000:]}")
+            raise RuntimeError(f"bitstream build failed:\n{build.log[-4000:]}"
+                               + (f"\nAll its logs are in {log_dir}" if log_dir else ""))
         bitstream, built_bitstream = build.bitstream, True
     elif workload_ref:
         workload = _checked(get(workload_ref))
@@ -131,6 +139,7 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         # F2 names its bitstream with an AGFI; the other platforms have only the bytes.
         name = bitstream.agfi or hashlib.sha256(bitstream.bitstream_bytes).hexdigest()[:16]
         stored_bitstream = get(bitstream.publish.chia_remote(bitstream, bucket, f"{prefix}/{name}"))
+        chia_log(build.logs, f"s3://{bucket}/{prefix}/{name}/{BUILD_LOGS_NAME}")
 
     # F2 machines have no AWS credentials, so a driver in S3 travels by value.
     if bitstream.driver_uri and not bitstream.driver_bytes:
