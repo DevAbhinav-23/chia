@@ -363,8 +363,9 @@ Engine); everything downstream of provisioning is provider-agnostic.
      - Cloud workers reach the head
    * - ``vpc`` (default)
      - Directly, over private IPs. The head must be an EC2 machine in the same
-       region, and ``provider.head_ip`` its private IP. CHIA launches the
-       workers in the head's VPC. AWS only.
+       region (``aws_nodes``) or a GCP VM in the same project (``gcp_nodes``),
+       and ``provider.head_ip`` its private IP. CHIA launches the workers in
+       the head's network.
    * - ``tunnel``
      - Over SSH tunnels from the head, so the head can be anywhere (a laptop,
        an on-prem server). Traffic between workers goes through the head.
@@ -373,9 +374,9 @@ Engine); everything downstream of provisioning is provider-agnostic.
        it is the default when the config has one. See `Tailnet (tailscale)
        clusters`_.
 
-* A head on EC2 uses ``vpc``. A head outside AWS uses ``ts_user``
+* A head on EC2 or GCP uses ``vpc``. A head elsewhere uses ``ts_user``
   (recommended) or ``tunnel``.
-* ``gcp_nodes`` need ``tunnel`` or ``ts_user``.
+* With ``vpc``, one cluster cannot have both ``aws_nodes`` and ``gcp_nodes``.
 * Machines that a job launches at runtime with ``AWSManager`` follow the same
   setting (``vpc`` or ``tunnel``).
 * CHIA creates one security group for the cluster's AWS machines, and
@@ -383,6 +384,17 @@ Engine); everything downstream of provisioning is provider-agnostic.
   the head included.
 * With ``tunnel``, ``aws: vpc_id`` chooses the workers' VPC (default: the
   account's default VPC).
+* For ``gcp_nodes``, CHIA creates firewall rules aimed at network tags: the
+  workers get ``chia-<cluster_name>``, and with ``vpc`` the head VM gets
+  ``chia-<cluster_name>-head``. The rules admit all traffic between the
+  cluster's machines and, with ``tunnel`` or ``ts_user``, SSH from the head's
+  public IP. They deny all other incoming traffic to the workers, also the
+  traffic that the network's own rules allow. ``chia down`` deletes the rules
+  and removes the head's tag. CHIA warns when another rule opens every port of
+  the head.
+* With ``tunnel`` or ``ts_user``, ``gcp_nodes: network`` chooses the workers'
+  network (default: ``default``). With ``vpc``, the workers go in the head's
+  network.
 
 aws_nodes
 ~~~~~~~~~
@@ -481,9 +493,15 @@ gcp_nodes
            spot: true
            disk_size_gb: 100
 
-``project`` (required), ``zone`` (default ``us-central1-a``), and ``network`` /
-``subnetwork`` (default to the project's ``default`` VPC) are section-level keys.
-Every other key lives under a named node type:
+``project`` (required), ``zone`` (default ``us-central1-a``), ``network`` and
+``subnetwork`` are section-level keys. ``network`` is the head's network with
+``vpc``, else the project's ``default`` network unless set. Without
+``subnetwork``, CHIA uses the head's subnet in the head's region (``vpc``), else
+the network's only subnet in each zone's region. CHIA stops before it launches
+anything if the network has no subnet or several subnets there, or no route to
+the internet. GCP names (instances, network tags, firewall rules) have at most
+63 characters, so CHIA also stops if ``cluster_name`` or a node type name is too
+long. Every other key lives under a named node type:
 
 .. list-table::
    :header-rows: 1
