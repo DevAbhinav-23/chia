@@ -352,21 +352,40 @@ def cleanup_firewall(cluster_name: str, project: str) -> None:
 # The cluster's network (the head's, with connection "vpc")
 # ---------------------------------------------------------------------------
 
-def _find_head(project: str, head_ip: str):
-    """``(zone, instance, network interface)`` of the VM in *project* whose internal IP
-    is *head_ip*: the head, with ``connection: vpc``."""
+def _find_head(project: str, head_ip: str, network: str | None):
+    """``(zone, instance, network interface)`` of the head with ``connection: vpc``: the
+    VM in *project* whose internal IP is *head_ip*, in *network* if it is set."""
     cv = _compute()
+    matches = []
     req = cv.AggregatedListInstancesRequest(project=project)
     for scope, scoped in cv.InstancesClient().aggregated_list(request=req):
         for inst in (scoped.instances or []):
             for nic in inst.network_interfaces:
                 if nic.network_i_p == head_ip:
-                    return scope.rsplit("/", 1)[-1], inst, nic
-    raise RuntimeError(
-        f"connection: vpc, the default, needs the head on a GCP VM in project {project}, "
-        f"and provider.head_ip ({head_ip}) set to its internal IP; for a head outside GCP, "
-        f"set connection: tunnel"
-    )
+                    matches.append((scope.rsplit("/", 1)[-1], inst, nic))
+    if network:
+        in_network = [m for m in matches if _network_path(m[2].network, project) == network]
+        if matches and not in_network:
+            _, inst, nic = matches[0]
+            ips = [n.network_i_p for n in inst.network_interfaces
+                   if _network_path(n.network, project) == network]
+            raise RuntimeError(
+                f"gcp_nodes.network {network} is not the network of the head's IP {head_ip} "
+                f"({_network_path(nic.network, project)}); with connection: vpc the workers go "
+                f"in the network of provider.head_ip"
+                + (f", so set provider.head_ip to the head's IP in {network}, {ips[0]}" if ips else ""))
+        matches = in_network
+    if not matches:
+        raise RuntimeError(
+            f"connection: vpc, the default, needs the head on a GCP VM in project {project}, "
+            f"and provider.head_ip ({head_ip}) set to its internal IP; for a head outside GCP, "
+            f"set connection: tunnel"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"{len(matches)} VMs in project {project} have the internal IP {head_ip}; set "
+            f"gcp_nodes.network to the head's network")
+    return matches[0]
 
 
 def _set_tag(project: str, zone: str, inst, tag: str, add: bool) -> None:
@@ -409,8 +428,10 @@ def _pick_subnets(project: str, network: str, zones: set[str], subnetwork: str |
         if head_subnet and f"/regions/{region}/" in head_subnet:
             picked[z] = head_subnet
             continue
+        # Only subnets that can hold VMs: not proxy-only, Private Service Connect, etc.
         subnets = [s for s in client.list(project=project, region=region)
-                   if _network_path(s.network, project) == network]
+                   if _network_path(s.network, project) == network
+                   and s.purpose in ("", "PRIVATE", "PRIVATE_RFC_1918")]
         if not subnets:
             raise RuntimeError(
                 f"network {network} has no subnet in region {region}, the region of "
@@ -454,17 +475,13 @@ def _prepare_network(cluster_name: str, gcp_nodes: dict[str, GCPNodeConfig], pro
     """
     head_subnet = None
     if vpc_head_ip:
-        head_zone, head, nic = _find_head(project, vpc_head_ip)
-        head_network = _network_path(nic.network, project)
-        if not head_network.startswith(f"projects/{project}/"):
+        head_zone, head, nic = _find_head(project, vpc_head_ip,
+                                          _network_path(network, project) if network else None)
+        network, head_subnet = _network_path(nic.network, project), nic.subnetwork
+        if not network.startswith(f"projects/{project}/"):
             raise RuntimeError(
-                f"the head's network {head_network} belongs to another project (a Shared "
-                f"VPC), which connection: vpc does not support; set connection: tunnel")
-        if network and _network_path(network, project) != head_network:
-            raise RuntimeError(
-                f"gcp_nodes.network {network} is not the head's network {head_network}; "
-                f"with connection: vpc the workers go in the head's network")
-        network, head_subnet = head_network, nic.subnetwork
+                f"the head's network {network} belongs to another project (a Shared VPC), "
+                f"which connection: vpc does not support; set connection: tunnel")
     else:
         network = _network_path(network, project)
     _check_internet_route(project, network)
