@@ -59,7 +59,22 @@ def _relay_pkill_pattern(cluster_name: str) -> str:
 # without touching established connections. The READY line's trailing
 # "reload" advertises this; relays started before it existed lack it.
 RELAY_SCRIPT = r'''
-import json, selectors, signal, socket, struct, sys, threading
+import json, resource, selectors, signal, socket, struct, sys, threading
+
+
+def raise_fd_limit():
+    """Raise the soft open-file limit to the hard limit (1048576 when
+    the hard limit is unlimited).
+    """
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    target = hard if hard != resource.RLIM_INFINITY else 1048576
+    if soft == resource.RLIM_INFINITY or soft >= target:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except (ValueError, OSError) as e:
+        print("relay: could not raise the open-file limit from %d to %d: %s"
+              % (soft, target, e), flush=True)
 
 
 def socks5_connect(proxy, dest_ip, dest_port, timeout=15):
@@ -241,6 +256,7 @@ def _reload(spec_path, sel, servers, routes):
 
 
 def main():
+    raise_fd_limit()
     spec_path = sys.argv[1]
     with open(spec_path) as f:
         spec = json.load(f)
