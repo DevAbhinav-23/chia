@@ -38,7 +38,7 @@ If you have not yet set up the ``chia_env`` environment, create it and install C
 
     conda create -n chia_env python=3.10.19
     conda activate chia_env
-    pip install -e /path/to/chia
+    pip install chialoops
 
 Then create a directory for the project and activate the environment:
 
