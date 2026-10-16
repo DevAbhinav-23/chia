@@ -252,6 +252,7 @@ class AntigravityLLM(LLMCallBase):
         sandbox: bool = False,
         extra_cli_args: list[str] | None = None,
         resume_session: bool = False,
+        mcp_timeout_seconds: int | None = None,
         config=UNSET,
     ):
         super().__init__(system_message=system_message,
@@ -270,6 +271,7 @@ class AntigravityLLM(LLMCallBase):
         # self.dangerously_skip_permissions is set by LLMCallBase.__init__.
         self.sandbox = sandbox
         self.extra_cli_args = extra_cli_args or []
+        self.mcp_timeout_seconds = mcp_timeout_seconds
         self.logger = logging.getLogger(logging_name)
         self._call_counter = 0
         self._last_metadata: dict = {}
@@ -495,6 +497,8 @@ class AntigravityLLM(LLMCallBase):
                 "serverUrl": f"http://{tool.hostname}:{port}/{tool.name}/mcp",
                 "disabled": False,
             }
+            if self.mcp_timeout_seconds is not None:
+                servers[tool.name]["timeoutSeconds"] = self.mcp_timeout_seconds
         return {"mcpServers": servers}
 
     def _prepare_run_home(self, tools: list[ChiaTool]) -> str:
