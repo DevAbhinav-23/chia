@@ -457,8 +457,10 @@ def _warn_open_head(project: str, network: str, head) -> None:
         targets_head = ((not fw.target_tags and not fw.target_service_accounts)
                         or tags & set(fw.target_tags)
                         or accounts & set(fw.target_service_accounts))
+        # GCP's own rules write "every port" as 0-65535, others leave the ports out.
         if targets_head and any(a.I_p_protocol == "all"
-                                or (a.I_p_protocol in ("tcp", "udp") and not a.ports)
+                                or (a.I_p_protocol in ("tcp", "udp")
+                                    and (not a.ports or "0-65535" in a.ports))
                                 for a in fw.allowed):
             logger.warning(f"Firewall rule {fw.name} lets {', '.join(fw.source_ranges)} "
                            f"reach every port of the head, Ray's ports included")
