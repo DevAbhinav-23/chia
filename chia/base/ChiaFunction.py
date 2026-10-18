@@ -145,8 +145,8 @@ class ChiaFunction:
             # Forward the call args so a registered condition (set_cond) can
             # inspect them. The reserved kwargs (_chia_tag, hooks, display_name)
             # are already popped, so args/kwargs are the clean user arguments.
-            if b is not None and b.is_bypassed(func.__name__, tag, *args, **kwargs):
-                provider, data_path = b.get_provider_info(func.__name__)
+            if b is not None and b.is_bypassed(func.__qualname__, tag, *args, **kwargs):
+                provider, data_path = b.get_provider_info(func.__qualname__)
                 bypass_state = _get_bypass_state()
                 remote = ray.remote(_chia_bypass_trampoline).options(
                     name=f"BYPASS_{func.__qualname__}", **opts)
@@ -177,12 +177,12 @@ class ChiaFunction:
             hooks = _pop_chia_hooks(kwargs)
             ref = _try_bypass(args, kwargs, options_dict)
             if ref is not None:
-                return _maybe_wrap_cache(ref, func.__name__, cache_tag)
+                return _maybe_wrap_cache(ref, func.__qualname__, cache_tag)
 
             ref = _try_proxy(func, options_dict, _get_bypass_state(), hooks,
                              args, kwargs, display_name)
             if ref is not None:
-                return _maybe_wrap_cache(ref, func.__name__, cache_tag)
+                return _maybe_wrap_cache(ref, func.__qualname__, cache_tag)
 
             from chia.trace.profiler import get_profiler
             profiler = get_profiler()
@@ -209,7 +209,7 @@ class ChiaFunction:
                 ref = wrapper._chia_remote_func.remote(func, call_id, dispatch_meta, bypass_state, hooks, *args, **kwargs)
             else:
                 ref = wrapper._chia_remote_func.remote(func, bypass_state, hooks, *args, **kwargs)
-            return _maybe_wrap_cache(ref, func.__name__, cache_tag)
+            return _maybe_wrap_cache(ref, func.__qualname__, cache_tag)
 
         @functools.wraps(func)
         def chia_remote_blocking(*args, **kwargs):
@@ -239,12 +239,12 @@ class ChiaFunction:
                     hooks = _pop_chia_hooks(kwargs)
                     ref = _try_bypass(args, kwargs, merged)
                     if ref is not None:
-                        return _maybe_wrap_cache(ref, func.__name__, cache_tag)
+                        return _maybe_wrap_cache(ref, func.__qualname__, cache_tag)
 
                     ref = _try_proxy(func, merged, _get_bypass_state(), hooks,
                                      args, kwargs, display_name)
                     if ref is not None:
-                        return _maybe_wrap_cache(ref, func.__name__, cache_tag)
+                        return _maybe_wrap_cache(ref, func.__qualname__, cache_tag)
 
                     from chia.trace.profiler import get_profiler
                     profiler = get_profiler()
@@ -261,7 +261,7 @@ class ChiaFunction:
                         ref = remote.remote(func, call_id, dispatch_meta, bypass_state, hooks, *args, **kwargs)
                     else:
                         ref = remote.remote(func, bypass_state, hooks, *args, **kwargs)
-                    return _maybe_wrap_cache(ref, func.__name__, cache_tag)
+                    return _maybe_wrap_cache(ref, func.__qualname__, cache_tag)
 
                 def remote(self, *args, **kwargs):
                     return self.chia_remote(*args, **kwargs)
