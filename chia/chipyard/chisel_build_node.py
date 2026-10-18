@@ -4,6 +4,7 @@ import re
 import shlex
 import subprocess
 import logging
+import uuid
 from datetime import datetime
 from chia.chipyard.state_def import BuildArtifact, BuildTarget, SpikeBuildArtifact
 from chia.chipyard.spike_build_node import STATIC_ARCHIVES, stage_golden_model
@@ -153,9 +154,6 @@ class ChiselBuildNode:
         self.logging_level = logging_level
         self.log_dir = log_dir
         self.logging_resource = logging_resource
-        self._log_prefix = (
-            f"{log_dir}/{self.logging_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            if log_dir is not None else None)
         self.name = name
         self.logger = logging.getLogger(self.logging_name)
         self.logger.setLevel(self.logging_level)
@@ -315,10 +313,12 @@ class ChiselBuildNode:
 
     def _log(self, cmd: str, sims_dir: str, returncode: int,
              stdout: str, stderr: str) -> None:
-        """Add this build's output to the end of the node's log file, when
-        ``log_dir`` is set."""
-        if self._log_prefix is None:
+        """Write this build's output to its own file in ``log_dir``, when
+        ``log_dir`` is set. One file per call, so parallel builds never share
+        a file."""
+        if not self.log_dir:
             return
+        name = f"{self.config}_{datetime.now().strftime('%Y%m%d-%H%M%S')}_{uuid.uuid4().hex[:8]}.log"
         chia_log(
             "=" * 80 + "\n"
             f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {self.config} "
@@ -326,8 +326,8 @@ class ChiselBuildNode:
             + "=" * 80 + "\n\n"
             f"[Command] {cmd} (in {sims_dir})\n\n"
             f"[stdout]\n{stdout}\n\n"
-            f"[stderr]\n{stderr}\n\n",
-            f"{self._log_prefix}.log", self.logging_resource)
+            f"[stderr]\n{stderr}\n",
+            f"{self.log_dir}/{name}", self.logging_resource)
 
     @ChiaFunction(resources={"chipyard": 1})
     def build(self) -> BuildArtifact:
