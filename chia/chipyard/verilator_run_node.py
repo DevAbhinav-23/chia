@@ -50,9 +50,6 @@ class VerilatorRunNode:
         self._binary_path = None
         self.log_dir = log_dir
         self.logging_resource = logging_resource
-        self._log_prefix = (
-            f"{log_dir}/{self.logging_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            if log_dir is not None else None)
         self.logger = logging.getLogger(self.logging_name)
         self.logger.setLevel(logging_level)
 
@@ -242,10 +239,13 @@ class VerilatorRunNode:
             return "", size
 
     def _log(self, argv: list[str], result: RunResult) -> None:
-        """Add this run's output to the end of the node's log file, when
-        ``log_dir`` is set."""
-        if self._log_prefix is None:
+        """Write this run's output to its own file in ``log_dir``, when
+        ``log_dir`` is set. One file per call, so parallel runs never share a
+        file."""
+        if not self.log_dir:
             return
+        stem = os.path.splitext(result.test_binary_name)[0]
+        name = f"{stem}_{datetime.now().strftime('%Y%m%d-%H%M%S')}_{uuid.uuid4().hex[:8]}.log"
         chia_log(
             "=" * 80 + "\n"
             f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
@@ -253,8 +253,8 @@ class VerilatorRunNode:
             + "=" * 80 + "\n\n"
             f"[Command] {' '.join(str(a) for a in argv)}\n\n"
             f"[log]\n{result.log}\n\n"
-            f"[out]\n{result.out}\n\n",
-            f"{self._log_prefix}.log", self.logging_resource)
+            f"[out]\n{result.out}\n",
+            f"{self.log_dir}/{name}", self.logging_resource)
 
     @_cleans_task_dir
     def _execute(
