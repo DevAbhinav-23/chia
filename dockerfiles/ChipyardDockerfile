@@ -101,6 +101,32 @@ else:
     print("No glibc detection block to patch in build-setup.sh; skipping")
 PY
 
+# build-setup.sh creates its own conda-lock env with no Python bound:
+#
+#   conda create -y -p $CYDIR/.conda-lock-env -c conda-forge conda-lock=2.5.7
+#
+# conda-forge now resolves Python 3.15 into it, and conda-lock 2.5.7's vendored
+# lark still does "import sre_parse", removed in Python 3.13 — so step 1 dies
+# before it solves anything. Bound that env's Python. Hard failure if the line
+# moves: a silent skip would only fail the build again, 25 minutes later.
+RUN python - <<'PYEOF'
+import re, sys
+from pathlib import Path
+
+path = Path("/home/ray/chipyard/scripts/build-setup.sh")
+text = path.read_text()
+text, hits = re.subn(
+    r"(conda create -y -p \$CONDA_LOCK_ENV_PATH -c conda-forge [^\n]*?)( &&\n)",
+    r"""\1 "python<3.13"\2""",
+    text,
+    count=1,
+)
+if hits != 1:
+    sys.exit("::error::could not bound the conda-lock env's python in build-setup.sh")
+path.write_text(text)
+print("Bounded the conda-lock env to python<3.13")
+PYEOF
+
 # Install conda to ray's home directory (no sudo needed).
 # Inspired by chipyard's CI Dockerfile (.github/scripts/install-conda.sh).
 #
