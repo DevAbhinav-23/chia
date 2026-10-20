@@ -123,6 +123,8 @@ def main():
                                   "stopping only this cluster's Ray processes "
                                   "(overrides scoped_teardown in the config)")
 
+    subparsers.add_parser("clusters", help="List the clusters that chia brought up on this machine")
+
     # chia viz
     viz_parser = subparsers.add_parser("viz", help="Visualize a Chia loop graph")
     viz_parser.add_argument("source_file", help="Path to a Python file with @ChiaFunction calls")
@@ -249,6 +251,9 @@ def main():
     elif args.command == "down":
         from chia.cli.down import cmd_down
         cmd_down(args)
+    elif args.command == "clusters":
+        from chia.cli.clusters import cmd_clusters
+        cmd_clusters(args)
     elif args.command == "viz":
         from chia.cli.viz_cmd import cmd_viz
         cmd_viz(args)
