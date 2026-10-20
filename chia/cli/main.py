@@ -48,9 +48,11 @@ def _find_override(ray_argv):
     can be chia-native while ``job submit`` falls through to ray.
     """
     from chia.cli.job import run_job_stop
+    from chia.cli.status import run_status
 
     overrides = {
         ("job", "stop"): run_job_stop,
+        ("status",): run_status,
     }
     for depth in (2, 1):
         handler = overrides.get(tuple(ray_argv[:depth]))
@@ -201,7 +203,7 @@ def main():
                            help="Enable verbose (DEBUG) logging")
 
     _RAY_BACKED_HELP = {
-        "status": "Show cluster status (proxies to `ray status`)",
+        "status": "Show a chia cluster's status: chia status [NAME] (proxies to `ray status`)",
         "list": "List cluster resources (proxies to `ray list`)",
         "job": "Ray job commands (`stop` is chia-augmented; others proxy to `ray job`)",
         "ray": "Run any ray command (e.g. `chia ray status`)",
