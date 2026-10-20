@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 
+from chia.cluster import records
 from chia.cluster.config import (
     ClusterConfig, ConfigError, NodeAssignment,
     apply_cloud_network_mode, assign_nodes, build_config, load_raw_config,
@@ -160,3 +161,5 @@ def cmd_down(args):
             cleanup_firewall(cluster_name, gcp_project)
         except Exception as e:
             logger.error(f"Firewall cleanup failed: {e}")
+
+    records.remove(cluster_name)
