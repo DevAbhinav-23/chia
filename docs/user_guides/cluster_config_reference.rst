@@ -77,7 +77,9 @@ Top-level keys
      - Meaning
    * - ``cluster_name``
      - ``"default"``
-     - Identifier for the head and workers of this cluster.
+     - Identifier for the head and workers of this cluster, and the name that ``chia status`` and
+       ``chia clusters`` use. Clusters that are up at the same time on one machine need different
+       names.
    * - ``provider``
      - *required*
      - Cluster head node. See `provider`_.
