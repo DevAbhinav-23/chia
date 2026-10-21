@@ -12,8 +12,9 @@ from chia.cluster import records
 
 def run_status(status_argv, cluster=None) -> None:
     """``ray status`` for the cluster named first in *status_argv*, for *cluster* (a
-    cluster file), or for the only chia cluster that is up; one line if it is not up."""
-    if "--help" in status_argv or "-h" in status_argv:
+    cluster file), or for the only chia cluster that is up; one line if it is not up.
+    With ``--help``, or an ``--address`` that the user gives, Ray's own ``ray status``."""
+    if any(a in ("--help", "-h") or a.split("=", 1)[0] == "--address" for a in status_argv):
         from chia.cli.ray_passthrough import cmd_ray_passthrough
         cmd_ray_passthrough(["status", *status_argv], cluster=cluster)
     name = status_argv[0] if status_argv and not status_argv[0].startswith("-") else None
