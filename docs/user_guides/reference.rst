@@ -35,6 +35,13 @@ Bring up a Chia/Ray cluster from a YAML config.
 
 Tear down the cluster. Flags: ``-y/--yes``, ``-v/--verbose``.
 
+``chia clusters``
+~~~~~~~~~~~~~~~~~~
+
+List the clusters that ``chia up`` brought up on this machine: name, status (``up`` or ``not up``),
+head address and cluster file. chia keeps one record per cluster in ``~/.local/state/chia/clusters``
+(``$XDG_STATE_HOME/chia/clusters`` if set), and ``chia down`` deletes it.
+
 Visualization
 -------------
 
@@ -86,10 +93,12 @@ Visualize a ``ChiaProfileCollector`` JSONL log. See the
 Cluster Status
 ----------------
 
-``chia status [...]``
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+``chia status [NAME] [...]``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Print cluster status. Proxies to ``ray status``.
+Print the status of the chia cluster ``NAME``, a name that ``chia clusters`` lists. Without ``NAME``,
+print the status of the only chia cluster that is up. Proxies to ``ray status``. If the cluster is
+not up, it says so in one line. ``chia ray status`` keeps Ray's own behavior.
 
 .. list-table::
    :header-rows: 1
