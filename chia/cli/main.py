@@ -16,7 +16,7 @@ def _extract_cluster_opt(ray_argv):
     To specify chia cluster in the above case, use chia ray job submit --chia-cluster foo
      -- python app.py
 
-    Returns ``(cluster_path_or_None, remaining_ray_argv)``.
+    Returns ``(cluster_or_None, remaining_ray_argv)``, the cluster a file or a name.
     """
     cluster = None
     rest = []
@@ -28,7 +28,7 @@ def _extract_cluster_opt(ray_argv):
             break
         if a == "--chia-cluster":
             if i + 1 >= len(ray_argv):
-                sys.exit("chia: --chia-cluster requires a path argument")
+                sys.exit("chia: --chia-cluster requires a cluster file or a cluster name")
             cluster = ray_argv[i + 1]
             i += 2
         elif a.startswith("--chia-cluster="):
@@ -203,7 +203,7 @@ def main():
                            help="Enable verbose (DEBUG) logging")
 
     _RAY_BACKED_HELP = {
-        "status": "Show a chia cluster's status: chia status [NAME] (proxies to `ray status`)",
+        "status": "Show a chia cluster's status (proxies to `ray status`)",
         "list": "List cluster resources (proxies to `ray list`)",
         "job": "Ray job commands (`stop` is chia-augmented; others proxy to `ray job`)",
         "ray": "Run any ray command (e.g. `chia ray status`)",
