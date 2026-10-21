@@ -93,20 +93,21 @@ Visualize a ``ChiaProfileCollector`` JSONL log. See the
 Cluster Status
 ----------------
 
-``chia status [NAME] [...]``
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+``chia status [...]``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Print the status of the chia cluster ``NAME``, a name that ``chia clusters`` lists. Without ``NAME``,
-print the status of the only chia cluster that is up. Proxies to ``ray status``. If the cluster is
-not up, it says so in one line. ``chia ray status`` keeps Ray's own behavior.
+Print the status of a chia cluster: the one that ``--chia-cluster`` gives, or else the only chia
+cluster that is up. Proxies to ``ray status``. If the cluster is not up, it says so in one line.
+``chia ray status`` keeps Ray's own behavior.
 
 .. list-table::
    :header-rows: 1
 
    * - Flag
      - Meaning
-   * - ``--chia-cluster {path/to/cluster.yaml}``
-     - Specify the Chia cluster YAML file to target.
+   * - ``--chia-cluster {path/to/cluster.yaml|NAME}``
+     - Specify the Chia cluster to target: its YAML file, or its name from ``chia clusters``
+       (a file with that name wins).
    * - ``...``
      - all other args (including ``--help``) go to Ray.
 
@@ -121,8 +122,9 @@ List all states of a given resource. Proxies to ``ray list`` (e.g. ``chia list n
 
    * - Flag
      - Meaning
-   * - ``--chia-cluster {path/to/cluster.yaml}``
-     - Specify the Chia cluster YAML file to target.
+   * - ``--chia-cluster {path/to/cluster.yaml|NAME}``
+     - Specify the Chia cluster to target: its YAML file, or its name from ``chia clusters``
+       (a file with that name wins).
    * - ``...``
      - all other args (including ``--help``) go to Ray.
 
@@ -145,8 +147,9 @@ Ray's unmodified behavior.
 
    * - Flag
      - Meaning
-   * - ``--chia-cluster {path/to/cluster.yaml}``
-     - Specify the Chia cluster YAML file to target.
+   * - ``--chia-cluster {path/to/cluster.yaml|NAME}``
+     - Specify the Chia cluster to target: its YAML file, or its name from ``chia clusters``
+       (a file with that name wins).
    * - ``stop {job_id}``
      - Stop a job by its ID.
    * - ``...``
