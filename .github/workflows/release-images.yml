@@ -40,6 +40,11 @@ jobs:
     uses: ./.github/workflows/cacti.yml
     secrets: inherit
 
+  openram:
+    needs: chia
+    uses: ./.github/workflows/openram.yml
+    secrets: inherit
+
   riscv-cross:
     needs: chia
     uses: ./.github/workflows/riscv-cross.yml

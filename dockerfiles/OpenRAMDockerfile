@@ -1,0 +1,158 @@
+# OpenRAM SRAM-compiler worker image.
+#
+# Worker image for chia's OpenRAM SRAM pipeline (chia/vlsi/sram_openram/):
+# that code shells out to the OpenRAM compiler (the pinned `openram` PyPI
+# release, installed in its own conda env) to generate real sky130 SRAM
+# macros — layout, LEF, Liberty, Verilog — and hands the untouched OpenRAM
+# collateral to synthesis. OpenROAD (which bundles the OpenSTA engine) is
+# included only to validate the generated .lib/.lef files standalone via
+# read_liberty / read_lef (no synthesis run), exactly as in the CACTI image.
+#
+# What a sky130 OpenRAM run needs at runtime, all baked in here:
+#   * the OpenRAM compiler + technology tree  (source checkout; OPENRAM_HOME /
+#     OPENRAM_TECH point into it),
+#   * the open_pdks sky130A tree (magicrc, netgen setup, ngspice models),
+#     fetched with ciel at the commit OpenRAM's own Makefile pins,
+#   * the sky130_fd_bd_sram hand-made cell library, installed into the
+#     technology tree with OpenRAM's own `make sky130-install`.
+# Layout generation with DRC/LVS off and analytical timing (the chia
+# defaults) calls no external EDA tool, so magic/netgen/ngspice are NOT
+# installed: `check_lvsdrc = True` or `analytical_delay = False` are not
+# supported in this image.
+#
+# Build (from the chia repo root):
+#
+#   docker build -f dockerfiles/OpenRAMDockerfile \
+#       -t ghcr.io/ucb-bar/chia-openram:latest .
+#
+# syntax=docker/dockerfile:1
+# Pinned to the released chia image on a release build, so the version this
+# ships is the version it was built against.
+ARG BASE_IMAGE=ghcr.io/ucb-bar/chia:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+SHELL ["/bin/bash", "-cl"]
+
+# git clones the cell library and (sparsely) one standard cell OpenRAM's
+# installer copies; make runs OpenRAM's sky130-install target; zstd is what
+# ciel uses to unpack the PDK tarballs.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+        make \
+        zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+# /scratch holds the PDK and the default OpenRAM result cache. 1777 mirrors
+# the Genus/CACTI images so the runtime ray user can write under it.
+RUN mkdir -p /scratch /scratch/openram_cache && chmod 1777 /scratch /scratch/openram_cache
+
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray
+
+# ---------------------------------------------------------------------------
+# OpenRAM itself: a SOURCE CHECKOUT of the stable branch at a pinned commit,
+# driven exactly like its command line (python sram_compiler.py config.py)
+# under a dedicated conda env ("openram") so its numpy/scipy pins cannot
+# perturb the pinned ray base env; chia's runner invokes that interpreter by
+# absolute path (CHIA_OPENRAM_PYTHON) and finds the tree via OPENRAM_HOME.
+#
+# Why a checkout and not the PyPI wheel: the last PyPI release (1.2.48,
+# 2024) fails on several sky130 shapes BOOM needs (write-masked 1rw arrays
+# die in pin-escape routing, 64x32 1rw dies in the analytical timing graph);
+# the stable branch builds them. numpy<2 / scipy<1.14 are the versions the
+# checkout was validated with (its gdsMill still does float(1-d array) in
+# places). ciel fetches the sky130 PDK below.
+# ---------------------------------------------------------------------------
+ARG OPENRAM_COMMIT=b2b069ce119d1488cbe6883b2240bceb5c7ce29a
+ENV OPENRAM_PKG=/home/ray/OpenRAM
+RUN GIT_TERMINAL_PROMPT=0 git clone -q https://github.com/VLSIDA/OpenRAM.git ${OPENRAM_PKG} \
+ && git -C ${OPENRAM_PKG} checkout -q ${OPENRAM_COMMIT} \
+ && conda create -y -n openram python=3.11 pip \
+ && /home/ray/anaconda3/envs/openram/bin/pip install --no-cache-dir \
+        -r ${OPENRAM_PKG}/requirements.txt "numpy<2" "scipy<1.14" ciel \
+ && conda clean -afy \
+ && echo "$(cat ${OPENRAM_PKG}/VERSION)+g$(git -C ${OPENRAM_PKG} rev-parse --short ${OPENRAM_COMMIT})" > ${OPENRAM_PKG}/.chia_version
+
+ENV CHIA_OPENRAM_PYTHON=/home/ray/anaconda3/envs/openram/bin/python
+ENV OPENRAM_HOME=${OPENRAM_PKG}/compiler
+ENV OPENRAM_TECH=${OPENRAM_PKG}/technology
+# Version string chia hashes into every cache key (VERSION file + commit +
+# chia patch revision).
+# ".chiaN" = revision of the patches above that change OpenRAM's OUTPUT
+# (chia1: temperature factor fix). Bump it whenever a patch changes the
+# generated collateral so cached macros are regenerated.
+ENV CHIA_OPENRAM_VERSION=1.2.49+gb2b069ce.chia1
+
+# Upstream bug (present through the stable branch): gdsMill reads the GDS
+# record length as a SIGNED 16-bit int, so any record over 32 KiB (the long
+# XY lists write-masked macros produce) comes back negative and the read of
+# OpenRAM's own intermediate GDS dies with "read length must be non-negative"
+# / "unpack requires a buffer". GDSII record lengths are unsigned; patch the
+# one unpack.
+RUN sed -i 's/struct.unpack(">h",recordLengthAscii)/struct.unpack(">H",recordLengthAscii)/' \
+        ${OPENRAM_PKG}/compiler/gdsMill/gdsMill/gds2reader.py \
+ && grep -q 'unpack(">H",recordLengthAscii)' ${OPENRAM_PKG}/compiler/gdsMill/gdsMill/gds2reader.py
+
+# Upstream performance bug: net_spice.connect_pin checks `pin in self.pins`
+# (linear scan) for every pin, so the netlist of a large bitcell array
+# (every cell's vdd/gnd/wl/bl on a few nets) is quadratic — a 2048x256 macro
+# never gets past netlist construction. Identity-set check, same semantics.
+# Upstream model bug: the analytical temperature factor uses a thermal
+# voltage of 0.008625 * T_celsius (V), ~27x too large, so the SS (100 C)
+# Liberty of every macro reports clk->dout ~80x the TT value (40-56 ns). The
+# patch uses kT/q with T in kelvin; see openram-patches/temp_delay_factor.py.
+COPY --chown=ray:users dockerfiles/openram-patches/ /tmp/openram-patches/
+RUN for p in net_spice_connect_pin.py temp_delay_factor.py; do \
+        /home/ray/anaconda3/envs/openram/bin/python /tmp/openram-patches/$p ${OPENRAM_PKG} || exit 1; \
+    done && rm -rf /tmp/openram-patches
+
+# ---------------------------------------------------------------------------
+# sky130 PDK. The commit is OpenRAM's own pin (SKY130_CIEL in its Makefile).
+# ciel downloads sky130A/sky130B (~2 GB) under PDK_ROOT; OpenRAM's sky130
+# tech setup reads PDK_ROOT/sky130A/libs.tech/{magic,netgen,ngspice}.
+# ---------------------------------------------------------------------------
+ENV PDK_ROOT=/scratch/pdk
+ARG SKY130_CIEL=e8294524e5f67c533c5d0c3afa0bcc5b2a5fa066
+RUN mkdir -p ${PDK_ROOT} \
+ && /home/ray/anaconda3/envs/openram/bin/ciel enable \
+        --pdk-root ${PDK_ROOT} --pdk sky130 ${SKY130_CIEL}
+
+# ---------------------------------------------------------------------------
+# sky130 SRAM cell library (hand-made bitcells etc.) at the commit OpenRAM
+# pins (SRAM_LIB_GIT_COMMIT), plus the one sky130_fd_sc_hd cell (dlxtn) that
+# `make sky130-install` also copies — fetched with a sparse checkout instead
+# of the multi-GB skywater-pdk clone the Makefile would otherwise do. Then
+# OpenRAM's own installer populates technology/sky130/{gds,mag,sp,lvs,...}_lib
+# inside the checkout (its clone target runs `git fetch` on the
+# library, so the .git dirs are dropped only after the install).
+# ---------------------------------------------------------------------------
+ARG SRAM_LIB_GIT_COMMIT=dd64256961317205343a3fd446908b42bafba388
+RUN GIT_TERMINAL_PROMPT=0 git clone -q https://github.com/vlsida/sky130_fd_bd_sram.git ${PDK_ROOT}/sky130_fd_bd_sram \
+ && git -C ${PDK_ROOT}/sky130_fd_bd_sram checkout -q ${SRAM_LIB_GIT_COMMIT} \
+ && mkdir -p ${PDK_ROOT}/skywater-pdk/libraries/sky130_fd_sc_hd \
+ && GIT_TERMINAL_PROMPT=0 git clone -q --filter=blob:none --sparse \
+        https://github.com/google/skywater-pdk-libs-sky130_fd_sc_hd.git \
+        ${PDK_ROOT}/skywater-pdk/libraries/sky130_fd_sc_hd/latest \
+ && git -C ${PDK_ROOT}/skywater-pdk/libraries/sky130_fd_sc_hd/latest sparse-checkout set cells/dlxtn \
+ && make -C ${OPENRAM_PKG} sky130-install PDK_ROOT=${PDK_ROOT} \
+ && test -d ${OPENRAM_TECH}/sky130/gds_lib \
+ && rm -rf ${PDK_ROOT}/sky130_fd_bd_sram/.git ${PDK_ROOT}/skywater-pdk/libraries/sky130_fd_sc_hd/latest/.git
+
+# Default location of the content-addressed OpenRAM result cache
+# (chia.vlsi.sram_openram.openram_cache). Persistent only if the cluster
+# yaml bind-mounts a host directory here.
+ENV CHIA_OPENRAM_CACHE_DIR=/scratch/openram_cache
+
+# ---------------------------------------------------------------------------
+# OpenROAD — standalone validator for the OpenRAM .lib/.lef (read_liberty /
+# read_lef, no synthesis). Same rationale and layout as the CACTI image: the
+# prebuilt litex-hub package in its own "eda" env, appended to PATH so the
+# base python stays ahead of it.
+# ---------------------------------------------------------------------------
+RUN conda create -y -n eda -c litex-hub -c conda-forge openroad \
+ && conda clean -afy
+ENV PATH="${PATH}:/home/ray/anaconda3/envs/eda/bin"

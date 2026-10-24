@@ -35,3 +35,30 @@ LEF Gen
 ~~~~~~~
 
 .. automodule:: chia.vlsi.sram_cacti.lef_gen
+
+SRAM macros (OpenRAM)
+---------------------
+
+Drop-in alternative to the CACTI characterization: real sky130 macros from the
+OpenRAM compiler (native Liberty/LEF/Verilog), cached per worker node.
+
+OpenRAM Runner
+~~~~~~~~~~~~~~
+
+.. automodule:: chia.vlsi.sram_openram.openram_runner
+
+OpenRAM Cache
+~~~~~~~~~~~~~
+
+.. automodule:: chia.vlsi.sram_openram.openram_cache
+
+OpenRAM Macrocompiler glue
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: chia.vlsi.sram_openram.openram_macrocompiler
+
+SRAM Characterize (OpenRAM)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. automodule:: chia.vlsi.sram_openram.sram_characterize
+
