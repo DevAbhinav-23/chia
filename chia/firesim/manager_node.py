@@ -28,7 +28,7 @@ from chia.firesim.fs_bitstream import FSBitstream
 from chia.firesim.render import RUN_FARM_USER, render_hwdb, render_runtime_config, stage_workload
 from chia.firesim.specs import FPGA_RESOURCE
 from chia.firesim.state_def import RunConfig, SimJobResult
-from chia.trace.status import report, watch
+from chia.trace.live_status_monitor import report, watch
 
 FIRESIM_DIR = "/home/ray/firesim"
 DEPLOY_DIR = f"{FIRESIM_DIR}/deploy"
@@ -149,7 +149,7 @@ class FireSimManagerNode:
 
         ``config`` holds the FireSim runtime settings (``config_runtime.yaml``).
         Infrasetup and runworkload are one task so both use the same FPGA. Each
-        phase is reported on the ``FPGA`` status board.
+        phase is reported on the ``FPGA`` live status monitor.
         """
         host = socket.gethostname()
         report("FPGA", host, job=os.path.splitext(job.json_name)[0], state="staging")
