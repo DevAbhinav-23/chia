@@ -1,0 +1,200 @@
+# Assertions-on CIRCT image, for agents and fuzzers whose oracle is a failed
+# CIRCT assertion.
+#
+# CHIA's own chia-circt image compiles CIRCT's assertions out, so an oracle
+# that waits for an assertion would have nothing to detect. This image is CHIA's
+# CIRCT image plus exactly these additions:
+#
+#   * a caller-chosen CIRCT source commit, fetched BY SHA
+#   * the release SDK at a caller-chosen firtool-* tag, with a hard
+#     equality check on the two `llvm` gitlinks before ninja starts
+#   * CHIA's strip of the SDK's CIRCT headers and cmake configs
+#   * -O3 -UNDEBUG -gline-tables-only, so the binaries carry CIRCT's
+#     assertions and enough debug info to symbolize a frame
+#   * the whole oracle + reducer target list, as a parameter
+#   * lit, Verilator and libz3 (the last from the base)
+#   * openssh-client and rsync, which CHIA's documented image
+#     contract requires and CHIA's own CIRCT base omits
+#   * -DMLIR_SOURCE_DIR=/opt/circt-sdk, without which lit aborts
+#     during discovery at any CIRCT commit after 2026-07-16
+#   * CIRCT's slang front end, which is what gives `circt-verilog`
+#     a ninja target at all and `circt-translate` --import-verilog
+#
+# Build (from the chia repo root):
+#
+#   docker build -f dockerfiles/ChiaCirctAssertDockerfile \
+#       -t chia-circt-assert:<CIRCT_SHA[:12]> \
+#       --build-arg CIRCT_SHA=<40-char CIRCT commit> \
+#       --build-arg CIRCT_VER=<firtool-* tag whose llvm pin equals it> \
+#       --progress=plain .
+#
+# CIRCT_SHA and CIRCT_VER are a release-pinned-main pair: the newest
+# first-parent `main` commit whose `llvm` gitlink equals some firtool-* tag's
+# `llvm` gitlink. A one-bump-off pair is a hard
+# build failure, not a degradation, which is why the check below is an equality
+# of full 40-character SHAs with no tolerance and no nearest match.
+
+ARG BASE_IMAGE=ghcr.io/ucb-bar/chia-circt:latest
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-cl"]
+
+# The CIRCT source commit to build, by SHA. No default: a build that
+# does not say which commit it built is not a build a bug report can cite.
+ARG CIRCT_SHA
+# The firtool release whose SDK serves that commit. Same rule.
+ARG CIRCT_VER
+ARG CIRCT_PKG=circt-full-shared-linux-x64.tar.gz
+# The target list is a parameter, not a constant. circt-verilog exists only
+# with the slang front end on.
+ARG TOOL_TARGETS="circt-opt firtool circt-translate arcilator circt-reduce circt-verilog"
+# -UNDEBUG restores CIRCT's assert(); -gline-tables-only is what lets
+# llvm-symbolizer name a source file and a line in a crash frame.
+ARG CXX_FLAGS_RELEASE="-O3 -UNDEBUG -gline-tables-only"
+# ON builds CIRCT's slang front end; OFF skips it and drops circt-verilog.
+ARG SLANG=ON
+ARG BUILD_JOBS=8
+
+# ---------------------------------------------------------------------------
+# apt. CHIA's own line is ChiaCirctBaseDockerfile:45-52; these five are this
+# image's additions to it.
+#   verilator        -- the differential oracle's second simulator. No CHIA
+#                       image ships one.
+#   openssh-client   -- CHIA's documented image contract asks for both "for
+#   rsync               file transport" (docs/user_guides/docker_images.rst:35)
+#                       and ChiaCirctBaseDockerfile installs neither. The
+#                       documented contract wins.
+#   util-linux       -- already present as an essential package; named so the
+#                       Dockerfile states the dependency `prlimit` creates
+#                       rather than inheriting it.
+#   clang-tools      -- for clang-scan-deps ALONE. CMake scans every C++20
+#                       target for module dependencies, and slang is built to
+#                       C++20, so with the front end on and no scanner present
+#                       the build dies at the first slang edge with
+#                       `"CMAKE_CXX_COMPILER_CLANG_SCAN_DEPS-NOTFOUND": not
+#                       found`. The base installs `clang` but not the tools
+#                       package that carries the scanner, so enabling slang
+#                       is what creates this dependency. Verified:
+#                       with it, cmake resolves the variable to
+#                       /usr/bin/clang-scan-deps-18.
+# Deliberately before the SDK and the build so a package bump does not bust the
+# cache on the expensive layers below.
+# ---------------------------------------------------------------------------
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        --no-install-recommends \
+        verilator openssh-client rsync util-linux clang-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# lit, baked exactly once, into the interpreter CHIA checks
+# (chia/chipyard/circt.py:608), so circt_warm_build's conditional install finds
+# it present and does nothing and the cluster YAML does not repeat it. One
+# installer, not three.
+# ---------------------------------------------------------------------------
+RUN /home/ray/anaconda3/envs/py_worker/bin/pip install --no-cache-dir lit
+
+# ---------------------------------------------------------------------------
+# The release SDK at CIRCT_VER. The base image's SDK is pinned at ITS build
+# arg, so it answers for a tag this image did not choose; this image makes the
+# tag an independent parameter of THIS image, which means re-installing it here.
+# The strip of include/circt and lib/cmake/circt is CHIA's own and is
+# load-bearing, not hygiene: without it the build fails at target 514 of 1027
+# with `use of undeclared identifier 'RegistryType'`.
+# ---------------------------------------------------------------------------
+RUN rm -rf /opt/circt-sdk && mkdir -p /opt/circt-sdk \
+ && wget -qO- \
+      "https://github.com/llvm/circt/releases/download/${CIRCT_VER}/${CIRCT_PKG}" \
+        | tar -xz --strip-components=1 -C /opt/circt-sdk \
+ && rm -rf /opt/circt-sdk/include/circt /opt/circt-sdk/lib/cmake/circt
+
+# ---------------------------------------------------------------------------
+# The CIRCT source at CIRCT_SHA, and the pin equality check.
+#
+# The base already holds /workspace/circt as a `git clone --depth 1 --branch
+# "${CIRCT_VER}"`, which cannot check out an arbitrary commit, so we fetch into
+# the repository that is already there and never re-initialise it. Three lines,
+# each of which is load-bearing:
+#   1. `fetch --depth 1 origin <sha>` fetches by SHA, and it reaches
+#      a commit a tag clone cannot.
+#   2. `fetch --depth 1 origin tag <tag>` brings the TAG OBJECT in. The first
+#      fetch brings no tags, so without this line ${CIRCT_VER} is not a name
+#      the pin check can resolve and the check always fatals.
+#   3. `checkout --detach <sha>`, not FETCH_HEAD: after the second fetch
+#      FETCH_HEAD names the tag, and naming the SHA is unambiguous under both.
+#
+# Then the check itself, before ninja: full 40-character SHAs, no
+# tolerance, no nearest match, no version-string comparison. Without it the
+# failure surfaces at build target 2 of 1030 with
+# `error: Variable not defined: 'SymbolName'`.
+# ---------------------------------------------------------------------------
+WORKDIR /workspace/circt
+RUN git -C /workspace/circt fetch --depth 1 origin ${CIRCT_SHA} \
+ && git -C /workspace/circt fetch --depth 1 origin tag ${CIRCT_VER} \
+ && git -C /workspace/circt checkout --detach ${CIRCT_SHA} \
+ && echo "PIN CHECK source=$(git -C /workspace/circt ls-tree ${CIRCT_SHA} llvm | awk '{print $3}') sdk=$(git -C /workspace/circt ls-tree ${CIRCT_VER} llvm | awk '{print $3}')" \
+ && if test "$(git -C /workspace/circt ls-tree ${CIRCT_SHA} llvm | awk '{print $3}')" = \
+            "$(git -C /workspace/circt ls-tree ${CIRCT_VER} llvm | awk '{print $3}')"; \
+    then echo "PIN CHECK PASSED"; else echo "PIN CHECK FAILED"; exit 1; fi
+
+# ---------------------------------------------------------------------------
+# Configure. The first seven -D lines are CHIA's own, unchanged
+# (ChiaCirctBaseDockerfile:92-98); the rest are this image's additions.
+#
+#   -DLLVM_ENABLE_ASSERTIONS=ON is CHIA's and is kept although it is
+#    ineffective -- the SDK's LLVMConfig.cmake sets it OFF and wins.
+#    Removing a line CHIA passes would be a change to CHIA's base rather than
+#    an addition to it.
+#   -DMLIR_SOURCE_DIR is the SDK ROOT, not its include directory:
+#    test/Tools/circt-tblgen/lit.local.cfg joins `include` on it itself and
+#    then looks for mlir/IR/OpBase.td under the result.
+#   -DLLVM_PARALLEL_LINK_JOBS=2 is here because -gline-tables-only nearly
+#    triples the binaries and eight concurrent lld links of them do not fit in
+#    a 15 GB host. It constrains ninja's scheduling only, never codegen.
+#
+# LD_LIBRARY_PATH=/opt/circt-sdk/lib is in force image-wide from the base
+# (ChiaCirctBaseDockerfile:77-79) and must be, for THIS line and the ninja line
+# below and not only at probe time: the SDK's own mlir-tblgen generates CIRCT's
+# .inc files and fails at the build's first tablegen edge without libz3.so.4 on
+# the loader path.
+#
+# The base's build directory is removed first: it was configured against a
+# different SDK and a different source commit, and every object in it would be
+# rebuilt anyway because the flag string changed.
+# ---------------------------------------------------------------------------
+RUN rm -rf /workspace/circt/build \
+ && cmake -B build -S . -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DLLVM_ENABLE_ASSERTIONS=ON \
+      -DMLIR_DIR=/opt/circt-sdk/lib/cmake/mlir \
+      -DLLVM_DIR=/opt/circt-sdk/lib/cmake/llvm \
+      -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+      -DLLVM_USE_LINKER=lld -DLLVM_CCACHE_BUILD=ON \
+      -DCMAKE_CXX_FLAGS_RELEASE="${CXX_FLAGS_RELEASE}" \
+      -DCMAKE_C_FLAGS_RELEASE="${CXX_FLAGS_RELEASE}" \
+      -DMLIR_SOURCE_DIR=/opt/circt-sdk \
+      -DCIRCT_SLANG_FRONTEND_ENABLED=${SLANG} \
+      -DCIRCT_SLANG_BUILD_FROM_SOURCE=ON \
+      -DLLVM_PARALLEL_LINK_JOBS=2
+
+# ---------------------------------------------------------------------------
+# Build. The chmod is in this layer rather than its own because `chmod -R` over
+# a freshly written 2 GB build tree in a SEPARATE layer copies every file up
+# and doubles the image. The tree has to be world-writable because `chia up`
+# starts the container with `--user $(id -u):$(id -g)` and CHIA's repair chain
+# rebuilds in place.
+# ---------------------------------------------------------------------------
+RUN ninja -C build -j ${BUILD_JOBS} ${TOOL_TARGETS} \
+ && chmod -R a+rwX /workspace/circt
+
+# What this image is, readable from inside a running worker, so the ImageSpec
+# and every report produced from it can state the commit,
+# the tag and the flag string without re-deriving them. Last, so a change here
+# does not invalidate the build above.
+ENV CIRCT_ASSERT_CIRCT_SHA=${CIRCT_SHA} \
+    CIRCT_ASSERT_CIRCT_VER=${CIRCT_VER} \
+    CIRCT_ASSERT_TOOL_TARGETS=${TOOL_TARGETS} \
+    CIRCT_ASSERT_CXX_FLAGS_RELEASE=${CXX_FLAGS_RELEASE} \
+    CIRCT_ASSERT_SLANG=${SLANG}
+
+WORKDIR /workspace
+CMD ["/bin/bash"]
