@@ -166,7 +166,7 @@ jobs:
             # Every target runs its own --version.
             for t in $CIRCT_ASSERT_TOOL_TARGETS; do /workspace/circt/build/bin/$t --version >/dev/null; done
             # lit, Verilator, ssh and rsync present; lit discovers every test.
-            lit --version && verilator --version && ssh -V && rsync --version | head -1
+            lit --version && verilator --version && ssh -V && rsync --version | sed -n 1p
             grep mlir_src_root /workspace/circt/build/test/lit.site.cfg.py
             lit --no-progress-bar --show-tests /workspace/circt/build/test > /tmp/lit.txt
             ! grep -q "unable to parse config file" /tmp/lit.txt
